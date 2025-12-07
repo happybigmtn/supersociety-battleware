@@ -17,6 +17,8 @@ pub mod blackjack;
 pub mod casino_war;
 pub mod craps;
 pub mod hilo;
+#[cfg(test)]
+mod integration_tests;
 pub mod roulette;
 pub mod sic_bo;
 pub mod three_card;
