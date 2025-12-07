@@ -24,7 +24,11 @@
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "tailwindcss": "^4.1.11",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "typescript": "^5.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/node": "^20.0.0"
   },
   "devDependencies": {
     "jsdom": "^26.1.0",
