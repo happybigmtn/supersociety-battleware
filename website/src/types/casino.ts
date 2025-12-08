@@ -23,12 +23,16 @@ export enum GameType {
  * Player state on-chain
  */
 export interface Player {
+  nonce: bigint;
+  name: string;
   chips: bigint;
   shields: number;
   doubles: number;
+  rank: number;
   activeShield: boolean;
   activeDouble: boolean;
   activeSession: bigint | null;
+  lastDepositBlock: bigint;
 }
 
 /**
@@ -36,11 +40,30 @@ export interface Player {
  */
 export interface GameSession {
   id: bigint;
+  player: Uint8Array;
   gameType: GameType;
   bet: bigint;
   stateBlob: Uint8Array;
   moveCount: number;
+  createdAt: bigint;
   isComplete: boolean;
+}
+
+/**
+ * Leaderboard entry
+ */
+export interface LeaderboardEntry {
+  player: Uint8Array;
+  name: string;
+  chips: bigint;
+  rank: number;
+}
+
+/**
+ * Casino leaderboard
+ */
+export interface CasinoLeaderboard {
+  entries: LeaderboardEntry[];
 }
 
 /**

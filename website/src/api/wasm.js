@@ -75,6 +75,16 @@ export class WasmWrapper {
     return this.wasm.encode_casino_player_key(publicKeyBytes);
   }
 
+  // Encode casino session key
+  encodeCasinoSessionKey(sessionId) {
+    return this.wasm.encode_casino_session_key(BigInt(sessionId));
+  }
+
+  // Encode casino leaderboard key
+  encodeCasinoLeaderboardKey() {
+    return this.wasm.encode_casino_leaderboard_key();
+  }
+
   // Encode UpdatesFilter for all events
   encodeUpdatesFilterAll() {
     return this.wasm.encode_updates_filter_all();

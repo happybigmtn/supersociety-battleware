@@ -534,6 +534,47 @@ export class CasinoClient {
   }
 
   /**
+   * Get casino session information by session ID.
+   * @param {bigint|number} sessionId - Session ID
+   * @returns {Promise<Object|null>} CasinoSession data or null if not found
+   */
+  async getCasinoSession(sessionId) {
+    const keyBytes = this.wasm.encodeCasinoSessionKey(sessionId);
+    const result = await this.queryState(keyBytes);
+
+    if (result.found && result.value) {
+      if (result.value.type === 'CasinoSession') {
+        return result.value;
+      } else {
+        console.log('Value is not a CasinoSession type:', result.value.type);
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get casino leaderboard.
+   * @returns {Promise<Object|null>} CasinoLeaderboard data or null if not found
+   */
+  async getCasinoLeaderboard() {
+    const keyBytes = this.wasm.encodeCasinoLeaderboardKey();
+    const result = await this.queryState(keyBytes);
+
+    if (result.found && result.value) {
+      if (result.value.type === 'CasinoLeaderboard') {
+        return result.value;
+      } else {
+        console.log('Value is not a CasinoLeaderboard type:', result.value.type);
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Get existing keypair from localStorage or create a new one.
    * @returns {{publicKey: Uint8Array, publicKeyHex: string}} Keypair information
    * @warning Private keys are stored in localStorage which is not secure.

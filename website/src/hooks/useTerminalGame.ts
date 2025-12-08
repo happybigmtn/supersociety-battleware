@@ -27,6 +27,20 @@ const GAME_TYPE_MAP: Record<GameType, ChainGameType> = {
   [GameType.NONE]: ChainGameType.Blackjack, // Fallback
 };
 
+// Reverse mapping from chain game type to frontend game type
+const CHAIN_TO_FRONTEND_GAME_TYPE: Record<ChainGameType, GameType> = {
+  [ChainGameType.Baccarat]: GameType.BACCARAT,
+  [ChainGameType.Blackjack]: GameType.BLACKJACK,
+  [ChainGameType.CasinoWar]: GameType.CASINO_WAR,
+  [ChainGameType.Craps]: GameType.CRAPS,
+  [ChainGameType.VideoPoker]: GameType.VIDEO_POKER,
+  [ChainGameType.HiLo]: GameType.HILO,
+  [ChainGameType.Roulette]: GameType.ROULETTE,
+  [ChainGameType.SicBo]: GameType.SIC_BO,
+  [ChainGameType.ThreeCard]: GameType.THREE_CARD,
+  [ChainGameType.UltimateHoldem]: GameType.ULTIMATE_HOLDEM,
+};
+
 export const useTerminalGame = () => {
   // --- STATE ---
   const [stats, setStats] = useState<PlayerStats>({
@@ -117,7 +131,7 @@ export const useTerminalGame = () => {
         await client.connectUpdates(null);  // null = receive ALL updates
         console.log('[useTerminalGame] Connected to updates WebSocket (All filter)');
 
-        // Fetch on-chain player state to sync chips
+        // Fetch on-chain player state to sync chips, shields, doubles, and active modifiers
         try {
           const playerState = await client.getCasinoPlayer(keypair.publicKey);
           if (playerState) {
@@ -128,7 +142,47 @@ export const useTerminalGame = () => {
               shields: playerState.shields,
               doubles: playerState.doubles,
             }));
+
+            // Sync active modifiers from chain
+            setGameState(prev => ({
+              ...prev,
+              activeModifiers: {
+                shield: playerState.activeShield || false,
+                double: playerState.activeDouble || false,
+              }
+            }));
+
             setIsRegistered(true);
+
+            // Check for active session and restore game state
+            if (playerState.activeSession) {
+              const sessionId = BigInt(playerState.activeSession);
+              console.log('[useTerminalGame] Found active session:', sessionId.toString());
+              try {
+                const sessionState = await client.getCasinoSession(sessionId);
+                if (sessionState && !sessionState.isComplete) {
+                  console.log('[useTerminalGame] Restoring active session:', sessionState);
+                  currentSessionIdRef.current = sessionId;
+                  setCurrentSessionId(sessionId);
+                  // Set the game type from the session
+                  const frontendGameType = CHAIN_TO_FRONTEND_GAME_TYPE[sessionState.gameType as ChainGameType];
+                  if (frontendGameType) {
+                    gameTypeRef.current = frontendGameType;
+                    setGameState(prev => ({
+                      ...prev,
+                      type: frontendGameType,
+                      bet: Number(sessionState.bet),
+                      stage: 'PLAYING',
+                      message: 'GAME IN PROGRESS - RESTORED FROM CHAIN',
+                    }));
+                    // Parse the state blob to restore UI
+                    parseGameState(sessionState.stateBlob, frontendGameType);
+                  }
+                }
+              } catch (sessionError) {
+                console.warn('[useTerminalGame] Failed to fetch session state:', sessionError);
+              }
+            }
           } else {
             console.log('[useTerminalGame] No on-chain player state found, using defaults');
           }
@@ -265,7 +319,18 @@ export const useTerminalGame = () => {
         setStats(prev => ({
           ...prev,
           chips: finalChips,
+          // Decrement shields/doubles if they were used in this game
+          shields: event.wasShielded ? prev.shields - 1 : prev.shields,
+          doubles: event.wasDoubled ? prev.doubles - 1 : prev.doubles,
         }));
+
+        // Reset active modifiers since they were consumed
+        if (event.wasShielded || event.wasDoubled) {
+          setGameState(prev => ({
+            ...prev,
+            activeModifiers: { shield: false, double: false }
+          }));
+        }
 
         setGameState(prev => ({
           ...prev,
@@ -286,20 +351,6 @@ export const useTerminalGame = () => {
       unsubCompleted();
     };
   }, [chainService, isOnChain]);
-
-  // Reverse mapping from chain game type to frontend game type
-  const CHAIN_TO_FRONTEND_GAME_TYPE: Record<ChainGameType, GameType> = {
-    [ChainGameType.Baccarat]: GameType.BACCARAT,
-    [ChainGameType.Blackjack]: GameType.BLACKJACK,
-    [ChainGameType.CasinoWar]: GameType.CASINO_WAR,
-    [ChainGameType.Craps]: GameType.CRAPS,
-    [ChainGameType.VideoPoker]: GameType.VIDEO_POKER,
-    [ChainGameType.HiLo]: GameType.HILO,
-    [ChainGameType.Roulette]: GameType.ROULETTE,
-    [ChainGameType.SicBo]: GameType.SIC_BO,
-    [ChainGameType.ThreeCard]: GameType.THREE_CARD,
-    [ChainGameType.UltimateHoldem]: GameType.ULTIMATE_HOLDEM,
-  };
 
   // Helper to parse game state from event
   const parseGameState = (stateBlob: Uint8Array, gameType?: GameType) => {

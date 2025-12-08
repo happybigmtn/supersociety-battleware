@@ -209,6 +209,20 @@ pub fn encode_casino_player_key(public_key: &[u8]) -> Result<Vec<u8>, JsValue> {
     Ok(key.encode().to_vec())
 }
 
+/// Encode a casino session key.
+#[wasm_bindgen]
+pub fn encode_casino_session_key(session_id: u64) -> Vec<u8> {
+    let key = Key::CasinoSession(session_id);
+    key.encode().to_vec()
+}
+
+/// Encode the casino leaderboard key.
+#[wasm_bindgen]
+pub fn encode_casino_leaderboard_key() -> Vec<u8> {
+    let key = Key::CasinoLeaderboard;
+    key.encode().to_vec()
+}
+
 /// Encode UpdatesFilter::All
 #[wasm_bindgen]
 pub fn encode_updates_filter_all() -> Vec<u8> {
