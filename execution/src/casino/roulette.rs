@@ -183,6 +183,18 @@ impl RouletteState {
         let bet_count = blob[offset] as usize;
         offset += 1;
 
+        // Validate bet count against maximum to prevent DoS via large allocations
+        const MAX_BETS: usize = 20;
+        if bet_count > MAX_BETS {
+            return None;
+        }
+
+        // Validate we have enough bytes before allocating
+        let required_len = offset + (bet_count * 10);
+        if blob.len() < required_len {
+            return None;
+        }
+
         let mut bets = Vec::with_capacity(bet_count);
         for _ in 0..bet_count {
             if offset + 10 > blob.len() {

@@ -108,6 +108,13 @@ impl SicBoState {
         }
 
         let bet_count = bytes[0] as usize;
+
+        // Validate bet count against maximum to prevent DoS via large allocations
+        const MAX_BETS: usize = 20;
+        if bet_count > MAX_BETS {
+            return None;
+        }
+
         let expected_bet_bytes = bet_count * 10;
 
         if bytes.len() < 1 + expected_bet_bytes {

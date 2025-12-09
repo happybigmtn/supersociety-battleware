@@ -436,7 +436,7 @@ impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor
                                 {
                                     // We may drop the transactions from a block that was never broadcast...users
                                     // can rebroadcast.
-                                    let mut built = built.lock().unwrap();
+                                    let mut built = built.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                                     *built = Some((view, block));
                                 }
 
@@ -447,7 +447,7 @@ impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor
                             }
                             Message::Broadcast { payload } => {
                                 // Check if the last built is equal
-                                let Some(built) = built.lock().unwrap().take() else {
+                                let Some(built) = built.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() else {
                                     warn!(?payload, "missing block to broadcast");
                                     continue;
                                 };

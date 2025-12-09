@@ -194,6 +194,18 @@ impl CrapsState {
         let d2 = blob[3];
         let bet_count = blob[4] as usize;
 
+        // Validate bet count against maximum to prevent DoS via large allocations
+        const MAX_BETS: usize = 20;
+        if bet_count > MAX_BETS {
+            return None;
+        }
+
+        // Validate we have enough bytes for all bets before allocating
+        let required_len = 5 + (bet_count * 19);
+        if blob.len() < required_len {
+            return None;
+        }
+
         let mut bets = Vec::with_capacity(bet_count);
         let mut offset = 5;
 

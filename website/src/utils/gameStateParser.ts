@@ -22,6 +22,9 @@ const SUITS: Array<'♠' | '♥' | '♦' | '♣'> = ['♠', '♥', '♦', '♣']
 const RANKS: Array<'A' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K'> =
   ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 
+// Default card for malformed input
+const DEFAULT_CARD: Card = { suit: '♠', rank: 'A', value: 11 };
+
 /**
  * Convert card byte (0-51) to Card object
  * Card encoding: suit = card / 13, rank = (card % 13)
@@ -29,6 +32,11 @@ const RANKS: Array<'A' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 
  * Ranks: 0=A, 1=2, ..., 12=K
  */
 function parseCard(cardByte: number): Card {
+  // Bounds check for invalid card bytes
+  if (cardByte < 0 || cardByte >= 52) {
+    return DEFAULT_CARD;
+  }
+
   const suitIndex = Math.floor(cardByte / 13);
   const rankIndex = cardByte % 13;
 
@@ -63,23 +71,42 @@ export interface BlackjackState {
  * [pLen:u8] [pCards:u8×pLen] [dLen:u8] [dCards:u8×dLen] [stage:u8]
  */
 export function parseBlackjackState(state: Uint8Array): BlackjackState {
+  // Default safe state for malformed input
+  if (!state || state.length < 3) {
+    return { playerHand: [], dealerHand: [], stage: 'PLAYER_TURN' };
+  }
+
   let offset = 0;
 
-  // Read player hand
+  // Read player hand length
   const playerLen = state[offset++];
+  if (offset + playerLen >= state.length) {
+    return { playerHand: [], dealerHand: [], stage: 'PLAYER_TURN' };
+  }
+
   const playerHand: Card[] = [];
-  for (let i = 0; i < playerLen; i++) {
+  for (let i = 0; i < playerLen && offset < state.length; i++) {
     playerHand.push(parseCard(state[offset++]));
   }
 
-  // Read dealer hand
+  // Read dealer hand length
+  if (offset >= state.length) {
+    return { playerHand, dealerHand: [], stage: 'PLAYER_TURN' };
+  }
   const dealerLen = state[offset++];
+  if (offset + dealerLen > state.length) {
+    return { playerHand, dealerHand: [], stage: 'PLAYER_TURN' };
+  }
+
   const dealerHand: Card[] = [];
-  for (let i = 0; i < dealerLen; i++) {
+  for (let i = 0; i < dealerLen && offset < state.length; i++) {
     dealerHand.push(parseCard(state[offset++]));
   }
 
   // Read stage
+  if (offset >= state.length) {
+    return { playerHand, dealerHand, stage: 'PLAYER_TURN' };
+  }
   const stageValue = state[offset];
   const stage = stageValue === 0 ? 'PLAYER_TURN' :
                 stageValue === 1 ? 'DEALER_TURN' : 'COMPLETE';
@@ -100,7 +127,7 @@ export interface RouletteState {
  * Empty before spin, [result:u8] after spin
  */
 export function parseRouletteState(state: Uint8Array): RouletteState {
-  if (state.length === 0) {
+  if (!state || state.length === 0) {
     return { result: null };
   }
 
@@ -121,19 +148,32 @@ export interface BaccaratState {
  * [playerHandLen:u8] [playerCards:u8×n] [bankerHandLen:u8] [bankerCards:u8×n]
  */
 export function parseBaccaratState(state: Uint8Array): BaccaratState {
+  // Default safe state for malformed input
+  if (!state || state.length < 2) {
+    return { playerHand: [], bankerHand: [] };
+  }
+
   let offset = 0;
 
   // Read player hand
   const playerLen = state[offset++];
+  if (offset + playerLen >= state.length) {
+    return { playerHand: [], bankerHand: [] };
+  }
+
   const playerHand: Card[] = [];
-  for (let i = 0; i < playerLen; i++) {
+  for (let i = 0; i < playerLen && offset < state.length; i++) {
     playerHand.push(parseCard(state[offset++]));
   }
 
   // Read banker hand
+  if (offset >= state.length) {
+    return { playerHand, bankerHand: [] };
+  }
   const bankerLen = state[offset++];
+
   const bankerHand: Card[] = [];
-  for (let i = 0; i < bankerLen; i++) {
+  for (let i = 0; i < bankerLen && offset < state.length; i++) {
     bankerHand.push(parseCard(state[offset++]));
   }
 
@@ -153,7 +193,7 @@ export interface SicBoState {
  * [die1:u8] [die2:u8] [die3:u8]
  */
 export function parseSicBoState(state: Uint8Array): SicBoState {
-  if (state.length === 0) {
+  if (!state || state.length < 3) {
     return { dice: [0, 0, 0] };
   }
 
@@ -176,6 +216,14 @@ export interface VideoPokerState {
  * [stage:u8] [card1:u8] [card2:u8] [card3:u8] [card4:u8] [card5:u8]
  */
 export function parseVideoPokerState(state: Uint8Array): VideoPokerState {
+  // Default safe state for malformed input
+  if (!state || state.length < 6) {
+    return {
+      cards: [DEFAULT_CARD, DEFAULT_CARD, DEFAULT_CARD, DEFAULT_CARD, DEFAULT_CARD],
+      stage: 'DEAL'
+    };
+  }
+
   const stageValue = state[0];
   const stage = stageValue === 0 ? 'DEAL' : 'DRAW';
 
@@ -207,6 +255,15 @@ export interface ThreeCardState {
  * [stage:u8]
  */
 export function parseThreeCardState(state: Uint8Array): ThreeCardState {
+  // Default safe state for malformed input
+  if (!state || state.length < 7) {
+    return {
+      playerCards: [DEFAULT_CARD, DEFAULT_CARD, DEFAULT_CARD],
+      dealerCards: [DEFAULT_CARD, DEFAULT_CARD, DEFAULT_CARD],
+      stage: 'ANTE'
+    };
+  }
+
   const playerCards: [Card, Card, Card] = [
     parseCard(state[0]),
     parseCard(state[1]),
@@ -246,6 +303,17 @@ export interface UltimateHoldemState {
  * [playBetMultiplier:u8]
  */
 export function parseUltimateHoldemState(state: Uint8Array): UltimateHoldemState {
+  // Default safe state for malformed input
+  if (!state || state.length < 11) {
+    return {
+      stage: 'PREFLOP',
+      playerCards: [DEFAULT_CARD, DEFAULT_CARD],
+      communityCards: [DEFAULT_CARD, DEFAULT_CARD, DEFAULT_CARD, DEFAULT_CARD, DEFAULT_CARD],
+      dealerCards: [DEFAULT_CARD, DEFAULT_CARD],
+      playBetMultiplier: 0
+    };
+  }
+
   const stageValue = state[0];
   const stage = stageValue === 0 ? 'PREFLOP' :
                 stageValue === 1 ? 'FLOP' :
@@ -295,6 +363,15 @@ export interface CasinoWarState {
  * [playerCard:u8] [dealerCard:u8] [stage:u8]
  */
 export function parseCasinoWarState(state: Uint8Array): CasinoWarState {
+  // Default safe state for malformed input
+  if (!state || state.length < 3) {
+    return {
+      playerCard: DEFAULT_CARD,
+      dealerCard: DEFAULT_CARD,
+      stage: 'INITIAL'
+    };
+  }
+
   const playerCard = parseCard(state[0]);
   const dealerCard = parseCard(state[1]);
 
@@ -318,6 +395,14 @@ export interface HiLoState {
  * [currentCard:u8] [accumulator:i64 BE]
  */
 export function parseHiLoState(state: Uint8Array): HiLoState {
+  // Default safe state for malformed input
+  if (!state || state.length < 9) {
+    return {
+      currentCard: DEFAULT_CARD,
+      accumulator: 10000 // 1.0x multiplier
+    };
+  }
+
   const currentCard = parseCard(state[0]);
 
   // Read accumulator as i64 Big Endian
@@ -328,21 +413,99 @@ export function parseHiLoState(state: Uint8Array): HiLoState {
 }
 
 // ============================================================================
-// Craps State Parser (placeholder - Craps is not in the 10 games list)
+// Craps State Parser
 // ============================================================================
 
+export type CrapsPhase = 'COME_OUT' | 'POINT';
+
+export type CrapsBetType =
+  | 'PASS' | 'DONT_PASS' | 'COME' | 'DONT_COME' | 'FIELD'
+  | 'YES' | 'NO' | 'NEXT'
+  | 'HARDWAY_4' | 'HARDWAY_6' | 'HARDWAY_8' | 'HARDWAY_10';
+
+export type CrapsBetStatus = 'ON' | 'PENDING';
+
+export interface CrapsBet {
+  betType: CrapsBetType;
+  target: number;
+  status: CrapsBetStatus;
+  amount: number;
+  oddsAmount: number;
+}
+
 export interface CrapsState {
-  // Craps state would be complex with multiple bets
-  // Not implemented as it's not in the current game list
-  raw: Uint8Array;
+  phase: CrapsPhase;
+  mainPoint: number;
+  dice: [number, number];
+  bets: CrapsBet[];
+}
+
+const CRAPS_BET_TYPES: CrapsBetType[] = [
+  'PASS', 'DONT_PASS', 'COME', 'DONT_COME', 'FIELD',
+  'YES', 'NO', 'NEXT',
+  'HARDWAY_4', 'HARDWAY_6', 'HARDWAY_8', 'HARDWAY_10'
+];
+
+/**
+ * Read a Big Endian u64 from bytes
+ */
+function readBigEndianU64(bytes: Uint8Array, offset: number): number {
+  if (offset + 8 > bytes.length) return 0;
+  const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 8);
+  return Number(view.getBigUint64(0, false)); // false = Big Endian
 }
 
 /**
- * Craps is listed in reference types but not in execution layer
- * This is a placeholder for future implementation
+ * Craps State Format:
+ * [phase:u8] [main_point:u8] [d1:u8] [d2:u8] [bet_count:u8] [bets:CrapsBetEntry×count]
+ *
+ * Each CrapsBetEntry (19 bytes):
+ * [bet_type:u8] [target:u8] [status:u8] [amount:u64 BE] [odds_amount:u64 BE]
  */
 export function parseCrapsState(state: Uint8Array): CrapsState {
-  return { raw: state };
+  // Default safe state for malformed input
+  if (!state || state.length < 5) {
+    return {
+      phase: 'COME_OUT',
+      mainPoint: 0,
+      dice: [0, 0],
+      bets: []
+    };
+  }
+
+  const phase: CrapsPhase = state[0] === 0 ? 'COME_OUT' : 'POINT';
+  const mainPoint = state[1];
+  const dice: [number, number] = [state[2], state[3]];
+  const betCount = state[4];
+
+  // Validate we have enough bytes for all bets (19 bytes each)
+  const expectedLength = 5 + (betCount * 19);
+  if (state.length < expectedLength) {
+    return { phase, mainPoint, dice, bets: [] };
+  }
+
+  const bets: CrapsBet[] = [];
+  let offset = 5;
+
+  for (let i = 0; i < betCount && offset + 19 <= state.length; i++) {
+    const betTypeIndex = state[offset];
+    const target = state[offset + 1];
+    const statusByte = state[offset + 2];
+    const amount = readBigEndianU64(state, offset + 3);
+    const oddsAmount = readBigEndianU64(state, offset + 11);
+
+    // Validate bet type index
+    const betType: CrapsBetType = betTypeIndex < CRAPS_BET_TYPES.length
+      ? CRAPS_BET_TYPES[betTypeIndex]
+      : 'PASS';
+
+    const status: CrapsBetStatus = statusByte === 0 ? 'ON' : 'PENDING';
+
+    bets.push({ betType, target, status, amount, oddsAmount });
+    offset += 19;
+  }
+
+  return { phase, mainPoint, dice, bets };
 }
 
 // ============================================================================
