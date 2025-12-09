@@ -1,16 +1,22 @@
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { GameState } from '../../../types';
 import { DiceRender } from '../GameComponents';
 import { calculateCrapsExposure } from '../../../utils/gameUtils';
 
-export const CrapsView: React.FC<{ gameState: GameState }> = ({ gameState }) => {
+export const CrapsView = React.memo<{ gameState: GameState }>(({ gameState }) => {
     // Get current roll (last dice sum)
-    const currentRoll = gameState.dice.length === 2 ? gameState.dice[0] + gameState.dice[1] : null;
+    const currentRoll = useMemo(() =>
+        gameState.dice.length === 2 ? gameState.dice[0] + gameState.dice[1] : null,
+        [gameState.dice]
+    );
 
     // Get established come/don't come bets (status 'ON' with a target)
-    const establishedComeBets = gameState.crapsBets.filter(b =>
-        (b.type === 'COME' || b.type === 'DONT_COME') && b.status === 'ON' && b.target
+    const establishedComeBets = useMemo(() =>
+        gameState.crapsBets.filter(b =>
+            (b.type === 'COME' || b.type === 'DONT_COME') && b.status === 'ON' && b.target
+        ),
+        [gameState.crapsBets]
     );
 
     return (
@@ -304,4 +310,4 @@ export const CrapsView: React.FC<{ gameState: GameState }> = ({ gameState }) => 
                 )}
         </>
     );
-};
+});

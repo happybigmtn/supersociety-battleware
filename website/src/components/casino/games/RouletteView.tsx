@@ -1,21 +1,24 @@
 
-import React from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { GameState, RouletteBet } from '../../../types';
 import { getRouletteColor, calculateRouletteExposure } from '../../../utils/gameUtils';
 
-export const RouletteView: React.FC<{ gameState: GameState; numberInput?: string }> = ({ gameState, numberInput = "" }) => {
-    const lastNum = gameState.rouletteHistory.length > 0 ? gameState.rouletteHistory[gameState.rouletteHistory.length - 1] : null;
-    
-    const renderBetItem = (bet: RouletteBet, i: number) => (
+export const RouletteView = React.memo<{ gameState: GameState; numberInput?: string }>(({ gameState, numberInput = "" }) => {
+    const lastNum = useMemo(() =>
+        gameState.rouletteHistory.length > 0 ? gameState.rouletteHistory[gameState.rouletteHistory.length - 1] : null,
+        [gameState.rouletteHistory]
+    );
+
+    const renderBetItem = useCallback((bet: RouletteBet, i: number) => (
         <div key={i} className="flex justify-between items-center text-xs border border-gray-800 p-1 rounded bg-black/50">
             <div className="flex flex-col">
                 <span className="text-terminal-green font-bold text-[10px]">{bet.type} {bet.target !== undefined ? bet.target : ''}</span>
             </div>
             <div className="text-white text-[10px]">${bet.amount}</div>
         </div>
-    );
+    ), []);
 
-    const renderExposureRow = (num: number) => {
+    const renderExposureRow = useCallback((num: number) => {
         const pnl = calculateRouletteExposure(num, gameState.rouletteBets);
         const maxScale = 5000; 
         const barPercent = Math.min(Math.abs(pnl) / maxScale * 50, 50);
@@ -39,7 +42,7 @@ export const RouletteView: React.FC<{ gameState: GameState; numberInput?: string
                 </div>
             </div>
         );
-    };
+    }, [gameState.rouletteBets]);
 
     return (
         <>
@@ -204,4 +207,4 @@ export const RouletteView: React.FC<{ gameState: GameState; numberInput?: string
             )}
         </>
     );
-};
+});

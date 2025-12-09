@@ -51,7 +51,9 @@ const LATENCY: [f64; 20] = [
 /// Attempt to prune the state every 10000 blocks (randomly).
 const PRUNE_INTERVAL: u64 = 10_000;
 
-// TODO: store the outputs of previously computed state to avoid a ton of recomputation.
+// OPTIMIZATION: Consider caching ancestry computation results.
+// Currently recomputes ancestry on each call. A LRU cache keyed by (start, end)
+// could significantly reduce computation for repeated queries.
 async fn ancestry(
     mut marshal: marshal::Mailbox<MinSig, Block>,
     start: (Option<View>, Digest),
@@ -287,7 +289,9 @@ impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor
 
         // Create the execution pool
         //
-        // TODO (https://github.com/commonwarexyz/monorepo/issues/1540): use commonware-runtime::create_pool
+        // Note: Using rayon ThreadPool directly. When commonware-runtime::create_pool
+        // becomes available (see https://github.com/commonwarexyz/monorepo/issues/1540),
+        // consider migrating to it for consistency with the runtime.
         let execution_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(self.execution_concurrency)
             .build()

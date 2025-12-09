@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useCallback } from 'react';
 import { GameState, Card } from '../../../types';
 import { Hand } from '../GameComponents';
 import { evaluateVideoPokerHand } from '../../../utils/gameUtils';
@@ -9,7 +9,10 @@ interface VideoPokerViewProps {
     onToggleHold: (index: number) => void;
 }
 
-export const VideoPokerView: React.FC<VideoPokerViewProps> = ({ gameState, onToggleHold }) => {
+export const VideoPokerView = React.memo<VideoPokerViewProps>(({ gameState, onToggleHold }) => {
+    const handleToggleHold = useCallback((index: number) => {
+        onToggleHold(index);
+    }, [onToggleHold]);
     return (
         <>
             <div className="flex-1 w-full flex flex-col items-center justify-center gap-8 relative z-10 pb-20">
@@ -24,7 +27,7 @@ export const VideoPokerView: React.FC<VideoPokerViewProps> = ({ gameState, onTog
                 {/* Hand Area */}
                 <div className="min-h-[120px] flex gap-4 items-center justify-center">
                     {gameState.playerCards.length > 0 && gameState.playerCards.map((card, i) => (
-                        <div key={i} className="flex flex-col gap-2 cursor-pointer transition-transform hover:-translate-y-2" onClick={() => onToggleHold(i)}>
+                        <div key={i} className="flex flex-col gap-2 cursor-pointer transition-transform hover:-translate-y-2" onClick={() => handleToggleHold(i)}>
                              <Hand cards={[card]} />
                              <div className={`text-center text-[10px] font-bold py-1 border rounded ${card.isHidden ? 'border-terminal-green text-terminal-green bg-terminal-green/10' : 'border-transparent text-transparent'}`}>
                                  HOLD
@@ -53,4 +56,4 @@ export const VideoPokerView: React.FC<VideoPokerViewProps> = ({ gameState, onTog
             </div>
         </>
     );
-};
+});

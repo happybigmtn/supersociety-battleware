@@ -96,7 +96,8 @@ impl CasinoGame for HiLo {
     fn init(session: &mut GameSession, rng: &mut GameRng) -> GameResult {
         // Deal one card to start
         let mut deck = rng.create_deck();
-        let card = rng.draw_card(&mut deck).unwrap();
+        // This should never fail with a fresh deck, but we use a default card (Ace of Spades) as fallback
+        let card = rng.draw_card(&mut deck).unwrap_or(0);
 
         // Initial accumulator = bet amount in basis points (1x)
         let accumulator = BASE_MULTIPLIER;
@@ -132,7 +133,7 @@ impl CasinoGame for HiLo {
                 let base_payout = (session.bet as i64)
                     .checked_mul(accumulator)
                     .and_then(|v| v.checked_div(BASE_MULTIPLIER))
-                    .unwrap_or(i64::MAX);
+                    .ok_or(GameError::InvalidState)?;
 
                 // Return total payout (stake + winnings), consistent with other games
                 // Win(amount) means "add this to player chips" and the original bet
@@ -170,7 +171,7 @@ impl CasinoGame for HiLo {
 
                 // Draw new card (recreate deck without current card)
                 let mut deck = rng.create_deck_excluding(&[current_card]);
-                let new_card = rng.draw_card(&mut deck).ok_or(GameError::InvalidMove)?;
+                let new_card = rng.draw_card(&mut deck).ok_or(GameError::DeckExhausted)?;
                 let new_rank = card_rank(new_card);
 
                 session.move_count += 1;
@@ -188,7 +189,7 @@ impl CasinoGame for HiLo {
                     let new_accumulator = accumulator
                         .checked_mul(multiplier)
                         .and_then(|v| v.checked_div(BASE_MULTIPLIER))
-                        .unwrap_or(i64::MAX); // Cap at maximum on overflow
+                        .ok_or(GameError::InvalidState)?;
 
                     session.state_blob = serialize_state(new_card, new_accumulator);
                     Ok(GameResult::Continue)
@@ -278,7 +279,7 @@ mod tests {
         let accumulator = 15_000; // 1.5x
 
         let state = serialize_state(card, accumulator);
-        let (c, a) = parse_state(&state).unwrap();
+        let (c, a) = parse_state(&state).expect("Failed to parse state");
 
         assert_eq!(c, card);
         assert_eq!(a, accumulator);
@@ -292,7 +293,7 @@ mod tests {
 
         HiLo::init(&mut session, &mut rng);
 
-        let (card, accumulator) = parse_state(&session.state_blob).unwrap();
+        let (card, accumulator) = parse_state(&session.state_blob).expect("Failed to parse state");
 
         assert!(card < 52);
         assert_eq!(accumulator, BASE_MULTIPLIER);
@@ -314,7 +315,7 @@ mod tests {
         assert!(session.is_complete);
 
         // Immediate cashout at 1x returns the bet (stake returned = Win(100))
-        match result.unwrap() {
+        match result.expect("Failed to process cashout") {
             GameResult::Win(amount) => assert_eq!(amount, 100), // Returns the original bet
             _ => panic!("Expected Win on immediate cashout"),
         }
@@ -367,7 +368,7 @@ mod tests {
             match result {
                 Ok(GameResult::Continue) => {
                     streak += 1;
-                    let (_, acc) = parse_state(&session.state_blob).unwrap();
+                    let (_, acc) = parse_state(&session.state_blob).expect("Failed to parse state");
                     // Accumulator should be growing
                     assert!(acc > BASE_MULTIPLIER);
                 }

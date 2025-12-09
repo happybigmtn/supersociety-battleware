@@ -7,6 +7,7 @@ import { useKeyboardControls } from './hooks/useKeyboardControls';
 import { Header, Sidebar, Footer, CommandPalette, CustomBetOverlay, HelpOverlay, TournamentAlert } from './components/casino/Layout';
 import { RegistrationView } from './components/casino/RegistrationView';
 import { ActiveGame } from './components/casino/ActiveGame';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // Menu
 const SORTED_GAMES = Object.values(GameType).filter(g => g !== GameType.NONE).sort();
@@ -63,7 +64,7 @@ export default function CasinoApp() {
           if (gameState.type === GameType.SIC_BO) actions.placeSicBoBet('SUM', val);
       }
       setNumberInputString("");
-      setGameState((prev: any) => ({ ...prev, rouletteInputMode: 'NONE', sicBoInputMode: 'NONE' }));
+      setGameState((prev) => ({ ...prev, rouletteInputMode: 'NONE', sicBoInputMode: 'NONE' }));
   };
 
   if (phase === 'REGISTRATION') {
@@ -99,13 +100,15 @@ export default function CasinoApp() {
        <div className="flex flex-1 overflow-hidden relative">
           <main className="flex-1 flex flex-col relative bg-terminal-black p-4">
              <TournamentAlert tournamentTime={tournamentTime} />
-             <ActiveGame
-                gameState={gameState}
-                deck={deck}
-                numberInput={numberInputString}
-                onToggleHold={actions.toggleHold}
-                aiAdvice={aiAdvice}
-             />
+             <ErrorBoundary>
+               <ActiveGame
+                  gameState={gameState}
+                  deck={deck}
+                  numberInput={numberInputString}
+                  onToggleHold={actions.toggleHold}
+                  aiAdvice={aiAdvice}
+               />
+             </ErrorBoundary>
           </main>
           <Sidebar leaderboard={leaderboard} history={stats.history} viewMode={leaderboardView} currentChips={stats.chips} />
        </div>

@@ -13,6 +13,9 @@ try {
 }
 
 export default defineConfig({
+  esbuild: {
+    drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
+  },
   plugins: [
     react(),
     {
@@ -20,13 +23,13 @@ export default defineConfig({
       transformIndexHtml(html) {
         // Replace placeholder preconnect URLs with actual backend URL
         html = html.replace(/https:\/\/api\.example\.com/g, backendOrigin);
-        
+
         // Ensure fetchpriority is added to the main script
         html = html.replace(
           /<script type="module" crossorigin src="(\/assets\/index-[^"]+\.js)"><\/script>/,
           '<script type="module" crossorigin src="$1" fetchpriority="high"></script>'
         );
-        
+
         return html;
       }
     },

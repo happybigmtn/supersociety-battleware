@@ -19,7 +19,7 @@ export type GameTypeValue = typeof GameType[keyof typeof GameType];
 
 export interface Action {
     type: 'Register' | 'Deposit' | 'StartGame' | 'GameMove';
-    payload: any;
+    payload: unknown;
 }
 
 export interface Transaction {
@@ -60,7 +60,7 @@ function toHex(bytes: Uint8Array): string {
 function fromHex(hex: string): Uint8Array {
     const bytes = new Uint8Array(hex.length / 2);
     for (let i = 0; i < hex.length; i += 2) {
-        bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+        bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
     }
     return bytes;
 }

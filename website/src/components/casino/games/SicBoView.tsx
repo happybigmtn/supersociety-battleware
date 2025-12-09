@@ -1,25 +1,25 @@
 
-import React from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { GameState, SicBoBet } from '../../../types';
 import { DiceRender } from '../GameComponents';
 import { getSicBoTotalItems, getSicBoCombinationItems, calculateSicBoTotalExposure, calculateSicBoCombinationExposure } from '../../../utils/gameUtils';
 
-export const SicBoView: React.FC<{ gameState: GameState, numberInput?: string }> = ({ gameState, numberInput = "" }) => {
+export const SicBoView = React.memo<{ gameState: GameState, numberInput?: string }>(({ gameState, numberInput = "" }) => {
 
-    const totalItems = getSicBoTotalItems();
-    const combinationItems = getSicBoCombinationItems();
+    const totalItems = useMemo(() => getSicBoTotalItems(), []);
+    const combinationItems = useMemo(() => getSicBoCombinationItems(), []);
 
-    const renderBetItem = (bet: SicBoBet, i: number) => (
+    const renderBetItem = useCallback((bet: SicBoBet, i: number) => (
         <div key={i} className="flex justify-between items-center text-xs border border-gray-800 p-1 rounded bg-black/50">
             <div className="flex flex-col">
                 <span className="text-terminal-green font-bold text-[10px]">{bet.type} {bet.target}</span>
             </div>
             <div className="text-white text-[10px]">${bet.amount}</div>
         </div>
-    );
+    ), []);
 
     // Render a single exposure row for TOTALS column
-    const renderTotalRow = (entry: { total: number; isTriple: boolean; label: string }, idx: number) => {
+    const renderTotalRow = useCallback((entry: { total: number; isTriple: boolean; label: string }, idx: number) => {
         const pnl = calculateSicBoTotalExposure(entry.total, entry.isTriple, gameState.sicBoBets);
         const pnlRounded = Math.round(pnl);
 
@@ -40,10 +40,10 @@ export const SicBoView: React.FC<{ gameState: GameState, numberInput?: string }>
                 </div>
             </div>
         );
-    };
+    }, [gameState.sicBoBets]);
 
     // Render a single exposure row for COMBINATIONS column
-    const renderComboRow = (entry: { type: 'SINGLE' | 'SINGLE_2X' | 'SINGLE_3X' | 'DOUBLE' | 'TRIPLE' | 'ANY_TRIPLE'; target?: number; label: string }, idx: number) => {
+    const renderComboRow = useCallback((entry: { type: 'SINGLE' | 'SINGLE_2X' | 'SINGLE_3X' | 'DOUBLE' | 'TRIPLE' | 'ANY_TRIPLE'; target?: number; label: string }, idx: number) => {
         const pnl = calculateSicBoCombinationExposure(entry.type, entry.target, gameState.sicBoBets);
         const pnlRounded = Math.round(pnl);
 
@@ -72,7 +72,7 @@ export const SicBoView: React.FC<{ gameState: GameState, numberInput?: string }>
                 </div>
             </div>
         );
-    };
+    }, [gameState.sicBoBets]);
 
     return (
         <>
@@ -273,4 +273,4 @@ export const SicBoView: React.FC<{ gameState: GameState, numberInput?: string }>
             )}
         </>
     );
-};
+});

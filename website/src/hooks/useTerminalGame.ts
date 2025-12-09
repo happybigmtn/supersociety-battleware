@@ -169,10 +169,9 @@ export const useTerminalGame = () => {
         clientRef.current = client;
         publicKeyBytesRef.current = keypair.publicKey;
 
-        // Connect to WebSocket updates stream with "All" filter for debugging
-        // TODO: Change back to account-specific filter once working
-        await client.connectUpdates(null);  // null = receive ALL updates
-        console.log('[useTerminalGame] Connected to updates WebSocket (All filter)');
+        // Connect to WebSocket updates stream with account-specific filter
+        await client.connectUpdates(keypair.publicKey);
+        console.log('[useTerminalGame] Connected to updates WebSocket (account-specific filter)');
 
         // Fetch account state for nonce synchronization - this is critical!
         // The NonceManager needs the account data to sync the local nonce with chain state.
@@ -334,7 +333,7 @@ export const useTerminalGame = () => {
                 : null;
 
               // Map on-chain entries to our LeaderboardEntry format
-              const newBoard: LeaderboardEntry[] = leaderboardData.entries.map((entry: any) => ({
+              const newBoard: LeaderboardEntry[] = leaderboardData.entries.map((entry: { player?: string; name?: string; chips: bigint | number }) => ({
                 name: entry.name || `Player_${entry.player?.substring(0, 8)}`,
                 chips: Number(entry.chips),
                 status: 'ALIVE' as const
@@ -342,7 +341,7 @@ export const useTerminalGame = () => {
 
               // Check if current player is in the leaderboard
               const isPlayerInBoard = myPublicKeyHex && leaderboardData.entries.some(
-                (entry: any) => entry.player?.toLowerCase() === myPublicKeyHex.toLowerCase()
+                (entry: { player?: string }) => entry.player?.toLowerCase() === myPublicKeyHex.toLowerCase()
               );
 
               // If not in leaderboard, add current player (they might be outside top 10)

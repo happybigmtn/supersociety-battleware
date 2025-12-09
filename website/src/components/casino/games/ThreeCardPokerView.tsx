@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { GameState } from '../../../types';
 import { Hand } from '../GameComponents';
 import { getVisibleHandValue } from '../../../utils/gameUtils';
@@ -20,7 +20,7 @@ const getHandRankName = (cards: { rank: string }[]): string => {
     };
 
     const ranks = cards.map(c => getRankValue(c.rank)).sort((a, b) => b - a);
-    const suits = cards.map(c => (c as any).suit);
+    const suits = cards.map(c => c.suit);
 
     const isFlush = suits[0] === suits[1] && suits[1] === suits[2];
     const isStraight = (ranks[0] - ranks[1] === 1 && ranks[1] - ranks[2] === 1) ||
@@ -36,10 +36,23 @@ const getHandRankName = (cards: { rank: string }[]): string => {
     return 'HIGH CARD';
 };
 
-export const ThreeCardPokerView: React.FC<ThreeCardPokerViewProps> = ({ gameState }) => {
-    const playerRank = gameState.playerCards.length === 3 ? getHandRankName(gameState.playerCards) : '';
-    const dealerRank = gameState.dealerCards.length === 3 && !gameState.dealerCards.some(c => c.isHidden)
-        ? getHandRankName(gameState.dealerCards) : '';
+export const ThreeCardPokerView = React.memo<ThreeCardPokerViewProps>(({ gameState }) => {
+    const playerRank = useMemo(() =>
+        gameState.playerCards.length === 3 ? getHandRankName(gameState.playerCards) : '',
+        [gameState.playerCards]
+    );
+
+    const dealerRank = useMemo(() =>
+        gameState.dealerCards.length === 3 && !gameState.dealerCards.some(c => c.isHidden)
+            ? getHandRankName(gameState.dealerCards) : '',
+        [gameState.dealerCards]
+    );
+
+    const dealerQualifies = useMemo(() =>
+        gameState.dealerCards.every(c => !c.isHidden) &&
+        getVisibleHandValue(gameState.dealerCards.slice(0, 1)) >= 10,
+        [gameState.dealerCards]
+    );
 
     return (
         <>
@@ -59,7 +72,7 @@ export const ThreeCardPokerView: React.FC<ThreeCardPokerViewProps> = ({ gameStat
                             {dealerRank && (
                                 <span className="text-xs text-gray-500 mt-1">
                                     {gameState.dealerCards.every(c => !c.isHidden) ?
-                                        (getVisibleHandValue(gameState.dealerCards.slice(0, 1)) >= 10 ? 'QUALIFIES' : 'DOES NOT QUALIFY') : ''}
+                                        (dealerQualifies ? 'QUALIFIES' : 'DOES NOT QUALIFY') : ''}
                                 </span>
                             )}
                         </div>
@@ -168,4 +181,4 @@ export const ThreeCardPokerView: React.FC<ThreeCardPokerViewProps> = ({ gameStat
             </div>
         </>
     );
-};
+});

@@ -166,7 +166,9 @@ struct CrapsState {
 impl CrapsState {
     /// Serialize state to blob
     fn to_blob(&self) -> Vec<u8> {
-        let mut blob = Vec::new();
+        // Capacity: 5 (phase, main_point, d1, d2, bet_count) + bets (19 bytes each)
+        let capacity = 5 + (self.bets.len() * 19);
+        let mut blob = Vec::with_capacity(capacity);
         blob.push(self.phase as u8);
         blob.push(self.main_point);
         blob.push(self.d1);
@@ -192,7 +194,7 @@ impl CrapsState {
         let d2 = blob[3];
         let bet_count = blob[4] as usize;
 
-        let mut bets = Vec::new();
+        let mut bets = Vec::with_capacity(bet_count);
         let mut offset = 5;
 
         for _ in 0..bet_count {
@@ -365,7 +367,7 @@ fn calculate_hardway_payout(target: u8, d1: u8, d2: u8, total: u8, amount: u64) 
 /// Process a roll and return bet results
 fn process_roll(state: &mut CrapsState, d1: u8, d2: u8) -> Vec<BetResult> {
     let total = d1.saturating_add(d2);
-    let mut results = Vec::new();
+    let mut results = Vec::with_capacity(state.bets.len());
 
     // 1. Single-roll bets (FIELD, NEXT) - always resolve
     for (idx, bet) in state.bets.iter().enumerate() {
@@ -795,7 +797,7 @@ impl CasinoGame for Craps {
 
                 // Calculate total payout
                 let mut total_payout: i64 = 0;
-                let mut resolved_indices = Vec::new();
+                let mut resolved_indices = Vec::with_capacity(state.bets.len());
 
                 for result in results {
                     total_payout = total_payout.saturating_add(result.payout);
@@ -899,7 +901,7 @@ mod tests {
         let bytes = bet.to_bytes();
         assert_eq!(bytes.len(), 19);
 
-        let deserialized = CrapsBet::from_bytes(&bytes).unwrap();
+        let deserialized = CrapsBet::from_bytes(&bytes).expect("Failed to parse bet");
         assert_eq!(deserialized, bet);
     }
 
@@ -933,7 +935,7 @@ mod tests {
         assert_eq!(blob[1], 6);
         assert_eq!(blob[4], 2); // bet count
 
-        let deserialized = CrapsState::from_blob(&blob).unwrap();
+        let deserialized = CrapsState::from_blob(&blob).expect("Failed to parse state");
         assert_eq!(deserialized.phase, state.phase);
         assert_eq!(deserialized.main_point, state.main_point);
         assert_eq!(deserialized.bets.len(), 2);
@@ -998,7 +1000,7 @@ mod tests {
         assert!(!session.is_complete);
 
         // Verify state
-        let state = CrapsState::from_blob(&session.state_blob).unwrap();
+        let state = CrapsState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 1);
         assert_eq!(state.bets[0].bet_type, BetType::Field);
     }
@@ -1016,7 +1018,7 @@ mod tests {
         payload.extend_from_slice(&100u64.to_be_bytes());
 
         let mut rng = GameRng::new(&seed, session.id, 1);
-        Craps::process_move(&mut session, &payload, &mut rng).unwrap();
+        Craps::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Roll dice
         let mut rng = GameRng::new(&seed, session.id, 2);
@@ -1040,7 +1042,7 @@ mod tests {
         payload.extend_from_slice(&100u64.to_be_bytes());
 
         let mut rng = GameRng::new(&seed, session.id, 1);
-        Craps::process_move(&mut session, &payload, &mut rng).unwrap();
+        Craps::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Roll until game completes
         let mut move_num = 2;
@@ -1067,13 +1069,13 @@ mod tests {
         payload.extend_from_slice(&100u64.to_be_bytes());
 
         let mut rng = GameRng::new(&seed, session.id, 1);
-        Craps::process_move(&mut session, &payload, &mut rng).unwrap();
+        Craps::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Roll to establish point
         let mut rng = GameRng::new(&seed, session.id, 2);
-        Craps::process_move(&mut session, &[2], &mut rng).unwrap();
+        Craps::process_move(&mut session, &[2], &mut rng).expect("Failed to process move");
 
-        let state = CrapsState::from_blob(&session.state_blob).unwrap();
+        let state = CrapsState::from_blob(&session.state_blob).expect("Failed to parse state");
         if state.phase == Phase::Point {
             // Add odds
             let mut odds_payload = vec![1];
@@ -1084,7 +1086,7 @@ mod tests {
             assert!(result.is_ok());
 
             // Verify odds added
-            let state = CrapsState::from_blob(&session.state_blob).unwrap();
+            let state = CrapsState::from_blob(&session.state_blob).expect("Failed to parse state");
             assert_eq!(state.bets[0].odds_amount, 200);
         }
     }
@@ -1102,23 +1104,23 @@ mod tests {
         payload.extend_from_slice(&100u64.to_be_bytes());
 
         let mut rng = GameRng::new(&seed, session.id, 1);
-        Craps::process_move(&mut session, &payload, &mut rng).unwrap();
+        Craps::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
-        let state = CrapsState::from_blob(&session.state_blob).unwrap();
+        let state = CrapsState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets[0].status, BetStatus::Pending);
 
         // Roll a point (e.g., force a 6 by checking what we get)
         let mut move_num = 2;
         while move_num < 50 {
-            let state_before = CrapsState::from_blob(&session.state_blob).unwrap();
+            let state_before = CrapsState::from_blob(&session.state_blob).expect("Failed to parse state");
             if state_before.bets.is_empty() {
                 break; // Bet resolved
             }
 
             let mut rng = GameRng::new(&seed, session.id, move_num);
-            Craps::process_move(&mut session, &[2], &mut rng).unwrap();
+            Craps::process_move(&mut session, &[2], &mut rng).expect("Failed to process move");
 
-            let state_after = CrapsState::from_blob(&session.state_blob).unwrap();
+            let state_after = CrapsState::from_blob(&session.state_blob).expect("Failed to parse state");
             if !state_after.bets.is_empty() && state_after.bets[0].status == BetStatus::On {
                 // Come bet traveled
                 assert!(state_after.bets[0].target > 0);
@@ -1142,7 +1144,7 @@ mod tests {
         payload.extend_from_slice(&100u64.to_be_bytes());
 
         let mut rng = GameRng::new(&seed, session.id, 1);
-        Craps::process_move(&mut session, &payload, &mut rng).unwrap();
+        Craps::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Clear bets before rolling should succeed
         let mut rng = GameRng::new(&seed, session.id, 2);
@@ -1150,18 +1152,18 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify bets are cleared
-        let state = CrapsState::from_blob(&session.state_blob).unwrap();
+        let state = CrapsState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert!(state.bets.is_empty());
 
         // Place another bet and roll
         let mut payload = vec![0, BetType::Field as u8, 0];
         payload.extend_from_slice(&100u64.to_be_bytes());
         let mut rng = GameRng::new(&seed, session.id, 3);
-        Craps::process_move(&mut session, &payload, &mut rng).unwrap();
+        Craps::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Roll dice (this increments move_count)
         let mut rng = GameRng::new(&seed, session.id, 4);
-        Craps::process_move(&mut session, &[2], &mut rng).unwrap();
+        Craps::process_move(&mut session, &[2], &mut rng).expect("Failed to process move");
 
         // Clear bets after rolling should fail
         let mut rng = GameRng::new(&seed, session.id, 5);
@@ -1192,7 +1194,7 @@ mod tests {
             assert!(result.is_ok());
         }
 
-        let state = CrapsState::from_blob(&session.state_blob).unwrap();
+        let state = CrapsState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 2);
 
         // Verify we have Pass and Field bets
@@ -1203,9 +1205,9 @@ mod tests {
         // Other bets may or may not resolve depending on dice
         let initial_bet_count = state.bets.len();
         let mut rng = GameRng::new(&seed, session.id, 3);
-        Craps::process_move(&mut session, &[2], &mut rng).unwrap();
+        Craps::process_move(&mut session, &[2], &mut rng).expect("Failed to process move");
 
-        let state = CrapsState::from_blob(&session.state_blob).unwrap();
+        let state = CrapsState::from_blob(&session.state_blob).expect("Failed to parse state");
         // Field bet always resolves on first roll, so at least that bet is gone
         // Remaining bets depend on actual dice roll (Pass may resolve on 7/11/2/3/12)
         assert!(state.bets.len() < initial_bet_count, "At least field bet should resolve");

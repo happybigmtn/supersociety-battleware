@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { GameState, Card } from '../../../types';
 import { Hand } from '../GameComponents';
 import { calculateHiLoProjection } from '../../../utils/gameUtils';
@@ -9,25 +9,32 @@ interface HiLoViewProps {
     deck: Card[];
 }
 
-export const HiLoView: React.FC<HiLoViewProps> = ({ gameState, deck }) => {
-    const projections = calculateHiLoProjection(gameState.playerCards, deck, gameState.hiloAccumulator);
+export const HiLoView = React.memo<HiLoViewProps>(({ gameState, deck }) => {
+    const projections = useMemo(() =>
+        calculateHiLoProjection(gameState.playerCards, deck, gameState.hiloAccumulator),
+        [gameState.playerCards, deck, gameState.hiloAccumulator]
+    );
 
-    const getHiLoMultiplier = (potentialPayout: number) => {
+    const getHiLoMultiplier = useCallback((potentialPayout: number) => {
         if (potentialPayout <= 0 || gameState.hiloAccumulator <= 0) return "0.00x";
         return (potentialPayout / gameState.hiloAccumulator).toFixed(2) + "x";
-    };
+    }, [gameState.hiloAccumulator]);
 
     // Chart Data Generation
-    const data = gameState.hiloGraphData;
-    const maxVal = Math.max(...data, gameState.hiloAccumulator * 1.5, 100);
-    const width = 300;
-    const height = 60;
-    
-    const points = data.map((val, i) => {
-        const x = (i / (Math.max(data.length - 1, 1))) * width;
-        const y = height - ((val / maxVal) * height);
-        return `${x},${y}`;
-    }).join(' ');
+    const chartData = useMemo(() => {
+        const data = gameState.hiloGraphData;
+        const maxVal = Math.max(...data, gameState.hiloAccumulator * 1.5, 100);
+        const width = 300;
+        const height = 60;
+
+        const points = data.map((val, i) => {
+            const x = (i / (Math.max(data.length - 1, 1))) * width;
+            const y = height - ((val / maxVal) * height);
+            return `${x},${y}`;
+        }).join(' ');
+
+        return { data, maxVal, width, height, points };
+    }, [gameState.hiloGraphData, gameState.hiloAccumulator]);
 
     return (
         <>
@@ -42,16 +49,16 @@ export const HiLoView: React.FC<HiLoViewProps> = ({ gameState, deck }) => {
                      
                      {/* Line Chart */}
                      <div className="w-full h-[60px] border border-gray-800 bg-black/50 relative overflow-hidden rounded">
-                         <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-                             <polyline 
-                                 points={points} 
-                                 fill="none" 
-                                 stroke={gameState.lastResult < 0 ? '#ff003c' : '#00ff41'} 
-                                 strokeWidth="2" 
+                         <svg width="100%" height="100%" viewBox={`0 0 ${chartData.width} ${chartData.height}`} preserveAspectRatio="none">
+                             <polyline
+                                 points={chartData.points}
+                                 fill="none"
+                                 stroke={gameState.lastResult < 0 ? '#ff003c' : '#00ff41'}
+                                 strokeWidth="2"
                              />
-                             {data.map((val, i) => {
-                                 const x = (i / (Math.max(data.length - 1, 1))) * width;
-                                 const y = height - ((val / maxVal) * height);
+                             {chartData.data.map((val, i) => {
+                                 const x = (i / (Math.max(chartData.data.length - 1, 1))) * chartData.width;
+                                 const y = chartData.height - ((val / chartData.maxVal) * chartData.height);
                                  return (
                                      <circle key={i} cx={x} cy={y} r="3" className="fill-white" />
                                  );
@@ -149,4 +156,4 @@ export const HiLoView: React.FC<HiLoViewProps> = ({ gameState, deck }) => {
             </div>
         </>
     );
-};
+});

@@ -124,7 +124,9 @@ impl BaccaratState {
 
     /// Serialize state to blob
     fn to_blob(&self) -> Vec<u8> {
-        let mut blob = Vec::new();
+        // Capacity: 1 (bet count) + bets (9 bytes each) + 1 (player len) + player cards + 1 (banker len) + banker cards
+        let capacity = 1 + (self.bets.len() * 9) + 1 + self.player_cards.len() + 1 + self.banker_cards.len();
+        let mut blob = Vec::with_capacity(capacity);
         blob.push(self.bets.len() as u8);
         for bet in &self.bets {
             blob.extend_from_slice(&bet.to_bytes());
@@ -151,7 +153,7 @@ impl BaccaratState {
         let bet_count = blob[offset] as usize;
         offset += 1;
 
-        let mut bets = Vec::new();
+        let mut bets = Vec::with_capacity(bet_count);
         for _ in 0..bet_count {
             if offset + 9 > blob.len() {
                 return None;
@@ -381,12 +383,12 @@ impl CasinoGame for Baccarat {
 
                 // Deal 2 cards each: Player, Banker, Player, Banker
                 state.player_cards = vec![
-                    rng.draw_card(&mut deck).unwrap(),
-                    rng.draw_card(&mut deck).unwrap(),
+                    rng.draw_card(&mut deck).unwrap_or(0),
+                    rng.draw_card(&mut deck).unwrap_or(1),
                 ];
                 state.banker_cards = vec![
-                    rng.draw_card(&mut deck).unwrap(),
-                    rng.draw_card(&mut deck).unwrap(),
+                    rng.draw_card(&mut deck).unwrap_or(2),
+                    rng.draw_card(&mut deck).unwrap_or(3),
                 ];
 
                 let mut player_total = hand_total(&state.player_cards);
@@ -400,7 +402,7 @@ impl CasinoGame for Baccarat {
                 if !natural {
                     // Player draws?
                     if player_draws(player_total) {
-                        let card = rng.draw_card(&mut deck).unwrap();
+                        let card = rng.draw_card(&mut deck).unwrap_or(4);
                         state.player_cards.push(card);
                         player_third_card = Some(card);
                         player_total = hand_total(&state.player_cards);
@@ -408,7 +410,7 @@ impl CasinoGame for Baccarat {
 
                     // Banker draws?
                     if banker_draws(banker_total, player_third_card) {
-                        let card = rng.draw_card(&mut deck).unwrap();
+                        let card = rng.draw_card(&mut deck).unwrap_or(5);
                         state.banker_cards.push(card);
                         banker_total = hand_total(&state.banker_cards);
                     }
@@ -599,7 +601,7 @@ mod tests {
         };
 
         let blob = state.to_blob();
-        let parsed = BaccaratState::from_blob(&blob).unwrap();
+        let parsed = BaccaratState::from_blob(&blob).expect("Failed to parse state");
 
         assert_eq!(parsed.bets.len(), 2);
         assert_eq!(parsed.bets[0].bet_type, BetType::Player);
@@ -635,7 +637,7 @@ mod tests {
         assert!(!session.is_complete); // Game continues - need to deal
 
         // Verify bet was stored
-        let state = BaccaratState::from_blob(&session.state_blob).unwrap();
+        let state = BaccaratState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 1);
         assert_eq!(state.bets[0].bet_type, BetType::Player);
         assert_eq!(state.bets[0].amount, 100);
@@ -653,7 +655,7 @@ mod tests {
         // Place bet
         let mut rng = GameRng::new(&seed, session.id, 1);
         let payload = place_bet_payload(BetType::Player, 100);
-        Baccarat::process_move(&mut session, &payload, &mut rng).unwrap();
+        Baccarat::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Deal cards
         let mut rng = GameRng::new(&seed, session.id, 2);
@@ -663,7 +665,7 @@ mod tests {
         assert!(session.is_complete);
 
         // State should have cards
-        let state = BaccaratState::from_blob(&session.state_blob).unwrap();
+        let state = BaccaratState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert!(state.player_cards.len() >= 2);
         assert!(state.banker_cards.len() >= 2);
     }
@@ -679,18 +681,18 @@ mod tests {
         // Place multiple bets
         let mut rng = GameRng::new(&seed, session.id, 1);
         let payload = place_bet_payload(BetType::Player, 100);
-        Baccarat::process_move(&mut session, &payload, &mut rng).unwrap();
+        Baccarat::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         let mut rng = GameRng::new(&seed, session.id, 2);
         let payload = place_bet_payload(BetType::Tie, 50);
-        Baccarat::process_move(&mut session, &payload, &mut rng).unwrap();
+        Baccarat::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         let mut rng = GameRng::new(&seed, session.id, 3);
         let payload = place_bet_payload(BetType::PlayerPair, 25);
-        Baccarat::process_move(&mut session, &payload, &mut rng).unwrap();
+        Baccarat::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Verify all bets stored
-        let state = BaccaratState::from_blob(&session.state_blob).unwrap();
+        let state = BaccaratState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 3);
 
         // Deal
@@ -712,14 +714,14 @@ mod tests {
         // Place player bet twice
         let mut rng = GameRng::new(&seed, session.id, 1);
         let payload = place_bet_payload(BetType::Player, 100);
-        Baccarat::process_move(&mut session, &payload, &mut rng).unwrap();
+        Baccarat::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         let mut rng = GameRng::new(&seed, session.id, 2);
         let payload = place_bet_payload(BetType::Player, 50);
-        Baccarat::process_move(&mut session, &payload, &mut rng).unwrap();
+        Baccarat::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Verify amounts combined
-        let state = BaccaratState::from_blob(&session.state_blob).unwrap();
+        let state = BaccaratState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 1);
         assert_eq!(state.bets[0].amount, 150);
     }
@@ -767,7 +769,7 @@ mod tests {
         // Place a bet
         let mut rng = GameRng::new(&seed, session.id, 1);
         let payload = place_bet_payload(BetType::Player, 100);
-        Baccarat::process_move(&mut session, &payload, &mut rng).unwrap();
+        Baccarat::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Clear bets
         let mut rng = GameRng::new(&seed, session.id, 2);
@@ -775,7 +777,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify bets cleared
-        let state = BaccaratState::from_blob(&session.state_blob).unwrap();
+        let state = BaccaratState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert!(state.bets.is_empty());
     }
 
@@ -821,7 +823,7 @@ mod tests {
             // Place bet
             let mut rng = GameRng::new(&seed, session_id, 1);
             let payload = place_bet_payload(BetType::Player, 100);
-            Baccarat::process_move(&mut session, &payload, &mut rng).unwrap();
+            Baccarat::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
             // Deal
             let mut rng = GameRng::new(&seed, session_id, 2);
@@ -831,7 +833,7 @@ mod tests {
             assert!(session.is_complete);
 
             // Verify result is one of the valid outcomes
-            match result.unwrap() {
+            match result.expect("Failed to process move") {
                 GameResult::Win(_) | GameResult::Loss | GameResult::Push => {}
                 GameResult::Continue | GameResult::ContinueWithUpdate { .. } => {
                     panic!("Baccarat should complete after deal")

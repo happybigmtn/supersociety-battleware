@@ -1,25 +1,61 @@
 
-import { useEffect } from 'react';
-import { GameType } from '../types';
+import { useEffect, RefObject } from 'react';
+import { GameType, GameState } from '../types';
 
 interface KeyboardControlsProps {
-  gameState: any;
+  gameState: GameState;
   uiState: { commandOpen: boolean; customBetOpen: boolean; helpOpen: boolean; searchQuery: string };
   uiActions: {
       setCommandOpen: (v: boolean) => void;
       setCustomBetOpen: (v: boolean) => void;
-      setHelpOpen: (v: any) => void;
-      setHelpDetail: (v: any) => void;
+      setHelpOpen: (v: boolean | ((prev: boolean) => boolean)) => void;
+      setHelpDetail: (v: string | null) => void;
       setSearchQuery: (v: string) => void;
-      setCustomBetString: (v: any) => void;
-      setNumberInputString: (v: any) => void;
+      setCustomBetString: (v: string | ((prev: string) => string)) => void;
+      setNumberInputString: (v: string | ((prev: string) => string)) => void;
       startGame: (g: GameType) => void;
       setBetAmount: (n: number) => void;
   };
-  gameActions: any;
+  gameActions: {
+    setGameState: React.Dispatch<React.SetStateAction<GameState>>;
+    registerForTournament: () => void;
+    deal: () => void;
+    toggleShield: () => void;
+    toggleDouble: () => void;
+    bjHit: () => void;
+    bjStand: () => void;
+    bjDouble: () => void;
+    bjSplit: () => void;
+    bjInsurance: (take: boolean) => void;
+    drawVideoPoker: () => void;
+    toggleHold: (index: number) => void;
+    hiloPlay: (choice: 'HIGHER' | 'LOWER') => void;
+    hiloCashout: () => void;
+    baccaratActions: {
+      toggleSelection: (selection: 'PLAYER' | 'BANKER') => void;
+      placeBet: (betType: string) => void;
+      rebet: () => void;
+      undo: () => void;
+    };
+    placeRouletteBet: (betType: string, target?: number) => void;
+    rebetRoulette: () => void;
+    undoRouletteBet: () => void;
+    threeCardPlay: () => void;
+    threeCardFold: () => void;
+    uhCheck: () => void;
+    uhFold: () => void;
+    uhBet: (multiplier: number) => void;
+    placeCrapsBet: (betType: string) => void;
+    placeCrapsNumberBet: (inputMode: string, number: number) => void;
+    addCrapsOdds: () => void;
+    undoCrapsBet: () => void;
+    placeSicBoBet: (betType: string, target?: number) => void;
+    rebetSicBo: () => void;
+    undoSicBoBet: () => void;
+  };
   phase: string;
   isRegistered: boolean;
-  inputRefs: { input: any; customBet: any };
+  inputRefs: { input: RefObject<HTMLInputElement>; customBet: RefObject<HTMLInputElement> };
   sortedGames?: GameType[];
 }
 
@@ -62,7 +98,7 @@ export const useKeyboardControls = ({
                     uiActions.setHelpOpen(false); // Then close
                 }
                 // Reset game input modes
-                gameActions.setGameState((prev: any) => ({ ...prev, crapsInputMode: 'NONE', rouletteInputMode: 'NONE', sicBoInputMode: 'NONE' }));
+                gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'NONE', rouletteInputMode: 'NONE', sicBoInputMode: 'NONE' }));
                 uiActions.setNumberInputString("");
                 return;
             }
@@ -184,7 +220,7 @@ export const useKeyboardControls = ({
                     const selectedNum = numMap[e.key];
                     if (selectedNum !== undefined) {
                         gameActions.placeCrapsNumberBet(gameState.crapsInputMode, selectedNum);
-                        gameActions.setGameState((prev: any) => ({ ...prev, crapsInputMode: 'NONE' }));
+                        gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'NONE' }));
                         return;
                     }
                     return; // Absorb other keys while in input mode
@@ -195,10 +231,10 @@ export const useKeyboardControls = ({
                 if (k === 'f') gameActions.placeCrapsBet('FIELD');
                 if (k === 'o') gameActions.addCrapsOdds();
                 if (k === 'u') gameActions.undoCrapsBet();
-                if (k === 'y') gameActions.setGameState((prev: any) => ({ ...prev, crapsInputMode: 'YES' }));
-                if (k === 'n') gameActions.setGameState((prev: any) => ({ ...prev, crapsInputMode: 'NO' }));
-                if (k === 'x') gameActions.setGameState((prev: any) => ({ ...prev, crapsInputMode: 'NEXT' }));
-                if (k === 'h') gameActions.setGameState((prev: any) => ({ ...prev, crapsInputMode: 'HARDWAY' }));
+                if (k === 'y') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'YES' }));
+                if (k === 'n') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'NO' }));
+                if (k === 'x') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'NEXT' }));
+                if (k === 'h') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'HARDWAY' }));
             } else if (gameState.type === GameType.SIC_BO) {
                 if (k === 's') gameActions.placeSicBoBet('SMALL');
                 if (k === 'b') gameActions.placeSicBoBet('BIG');

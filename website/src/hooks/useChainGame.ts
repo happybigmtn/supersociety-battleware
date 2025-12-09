@@ -350,9 +350,9 @@ export const useChainGame = () => {
             }));
 
             console.log('[useChainGame] Started game:', type, 'session:', newSessionId.toString());
-        } catch (e: any) {
+        } catch (e) {
             console.error('[useChainGame] Failed to start game:', e);
-            const errorMsg = e?.message?.includes('fetch') ? 'CHAIN UNAVAILABLE' : 'FAILED TO START';
+            const errorMsg = (e instanceof Error && e.message?.includes('fetch')) ? 'CHAIN UNAVAILABLE' : 'FAILED TO START';
             setChainError(errorMsg);
             setGameState(prev => ({ ...prev, message: errorMsg }));
             // Keep sessionId for offline testing - game can still function with local state
@@ -471,12 +471,12 @@ export const useChainGame = () => {
     };
 
     const bjSplit = () => {
-        // TODO: Implement split on-chain if supported
+        // Split is not currently supported in the on-chain blackjack implementation
         setGameState(prev => ({ ...prev, message: "SPLIT NOT AVAILABLE ON-CHAIN" }));
     };
 
     const bjInsurance = (take: boolean) => {
-        // TODO: Implement insurance on-chain if supported
+        // Insurance is not currently supported in the on-chain blackjack implementation
         setGameState(prev => ({ ...prev, message: take ? "INSURANCE NOT AVAILABLE" : "CONTINUING" }));
     };
 

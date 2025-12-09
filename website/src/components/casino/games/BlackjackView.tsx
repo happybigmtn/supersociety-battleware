@@ -1,10 +1,12 @@
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { GameState } from '../../../types';
 import { Hand } from '../GameComponents';
 import { getVisibleHandValue } from '../../../utils/gameUtils';
 
-export const BlackjackView: React.FC<{ gameState: GameState }> = ({ gameState }) => {
+export const BlackjackView = React.memo<{ gameState: GameState }>(({ gameState }) => {
+    const dealerValue = useMemo(() => getVisibleHandValue(gameState.dealerCards), [gameState.dealerCards]);
+    const playerValue = useMemo(() => getVisibleHandValue(gameState.playerCards), [gameState.playerCards]);
     return (
         <>
             <div className="flex-1 w-full flex flex-col items-center justify-center gap-8 relative z-10 pb-20">
@@ -14,9 +16,9 @@ export const BlackjackView: React.FC<{ gameState: GameState }> = ({ gameState })
                     {gameState.dealerCards.length > 0 ? (
                         <div className="flex flex-col items-center gap-2">
                             <span className="text-lg font-bold tracking-widest text-terminal-accent">DEALER</span>
-                            <Hand 
-                                cards={gameState.dealerCards} 
-                                title={`(${getVisibleHandValue(gameState.dealerCards)})`}
+                            <Hand
+                                cards={gameState.dealerCards}
+                                title={`(${dealerValue})`}
                                 forcedColor="text-terminal-accent"
                             />
                         </div>
@@ -47,9 +49,9 @@ export const BlackjackView: React.FC<{ gameState: GameState }> = ({ gameState })
                     <div className="flex flex-col items-center gap-2 scale-110 transition-transform">
                         <span className="text-lg font-bold tracking-widest text-terminal-green">YOU</span>
                         {gameState.playerCards.length > 0 ? (
-                             <Hand 
-                                cards={gameState.playerCards} 
-                                title={`(${getVisibleHandValue(gameState.playerCards)})`} 
+                             <Hand
+                                cards={gameState.playerCards}
+                                title={`(${playerValue})`}
                                 forcedColor="text-terminal-green"
                             />
                         ) : (
@@ -113,4 +115,4 @@ export const BlackjackView: React.FC<{ gameState: GameState }> = ({ gameState })
             </div>
         </>
     );
-};
+});

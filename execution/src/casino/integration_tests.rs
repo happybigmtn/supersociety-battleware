@@ -401,15 +401,15 @@ mod tests {
         let mut rng1 = GameRng::new(&seed, 1, 1);
         let mut rng2 = GameRng::new(&seed, 2, 1);
 
-        process_game_move(&mut session1, &bet_payload, &mut rng1).unwrap();
-        process_game_move(&mut session2, &bet_payload, &mut rng2).unwrap();
+        process_game_move(&mut session1, &bet_payload, &mut rng1).expect("Failed to process move");
+        process_game_move(&mut session2, &bet_payload, &mut rng2).expect("Failed to process move");
 
         // Now spin both wheels
         let mut rng1 = GameRng::new(&seed, 1, 2);
         let mut rng2 = GameRng::new(&seed, 2, 2);
 
-        process_game_move(&mut session1, &[1], &mut rng1).unwrap();
-        process_game_move(&mut session2, &[1], &mut rng2).unwrap();
+        process_game_move(&mut session1, &[1], &mut rng1).expect("Failed to process move");
+        process_game_move(&mut session2, &[1], &mut rng2).expect("Failed to process move");
 
         // Results should be different (with very high probability)
         assert_ne!(session1.state_blob, session2.state_blob);
@@ -428,11 +428,11 @@ mod tests {
         let mut bet_payload = vec![0, 1, 0];
         bet_payload.extend_from_slice(&100u64.to_be_bytes());
         let mut rng = GameRng::new(&seed, session.id, 1);
-        process_game_move(&mut session, &bet_payload, &mut rng).unwrap();
+        process_game_move(&mut session, &bet_payload, &mut rng).expect("Failed to process move");
 
         // Complete the game by spinning
         let mut rng = GameRng::new(&seed, session.id, 2);
-        process_game_move(&mut session, &[1], &mut rng).unwrap();
+        process_game_move(&mut session, &[1], &mut rng).expect("Failed to process move");
 
         assert!(session.is_complete);
 

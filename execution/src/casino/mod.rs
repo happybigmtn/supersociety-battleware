@@ -191,6 +191,10 @@ pub enum GameError {
     InvalidMove,
     /// Game session has already completed.
     GameAlreadyComplete,
+    /// Invalid game state or corrupted state blob.
+    InvalidState,
+    /// Deck is exhausted (no more cards to draw).
+    DeckExhausted,
 }
 
 /// Trait for casino game implementations.
@@ -368,7 +372,7 @@ mod tests {
         let mut deck = rng.create_deck();
         let initial_len = deck.len();
 
-        let card = rng.draw_card(&mut deck).unwrap();
+        let card = rng.draw_card(&mut deck).expect("Failed to draw card from deck");
         assert!(card < 52);
         assert_eq!(deck.len(), initial_len - 1);
         assert!(!deck.contains(&card));

@@ -179,11 +179,11 @@ impl CasinoGame for VideoPoker {
         // Deal 5 cards
         let mut deck = rng.create_deck();
         let cards: [u8; 5] = [
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
+            rng.draw_card(&mut deck).unwrap_or(0),
+            rng.draw_card(&mut deck).unwrap_or(1),
+            rng.draw_card(&mut deck).unwrap_or(2),
+            rng.draw_card(&mut deck).unwrap_or(3),
+            rng.draw_card(&mut deck).unwrap_or(4),
         ];
 
         session.state_blob = serialize_state(Stage::Deal, &cards);
@@ -379,7 +379,7 @@ mod tests {
         VideoPoker::init(&mut session, &mut rng);
         assert!(!session.is_complete);
 
-        let (stage, cards) = parse_state(&session.state_blob).unwrap();
+        let (stage, cards) = parse_state(&session.state_blob).expect("Failed to parse state");
         assert_eq!(stage, Stage::Deal);
         for card in cards {
             assert!(card < 52);
@@ -400,14 +400,14 @@ mod tests {
         let mut rng = GameRng::new(&seed, session.id, 0);
 
         VideoPoker::init(&mut session, &mut rng);
-        let (_, original_cards) = parse_state(&session.state_blob).unwrap();
+        let (_, original_cards) = parse_state(&session.state_blob).expect("Failed to parse state");
 
         // Discard all cards (hold none)
         let mut rng = GameRng::new(&seed, session.id, 1);
         let result = VideoPoker::process_move(&mut session, &[0], &mut rng);
 
         assert!(result.is_ok());
-        let (_, new_cards) = parse_state(&session.state_blob).unwrap();
+        let (_, new_cards) = parse_state(&session.state_blob).expect("Failed to parse state");
 
         // All cards should be different (with high probability)
         // At least some should be different

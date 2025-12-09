@@ -6,6 +6,40 @@
 import { GameType, CasinoGameStartedEvent, CasinoGameMovedEvent, CasinoGameCompletedEvent } from '../types/casino';
 import { CasinoClient } from '../api/client.js';
 
+// Extend CasinoClient to include nonceManager property
+interface CasinoClientWithNonceManager extends CasinoClient {
+  nonceManager: {
+    submitCasinoRegister: (name: string) => Promise<{ txHash?: string }>;
+    submitCasinoStartGame: (gameType: GameType, bet: bigint, sessionId: bigint) => Promise<{ txHash?: string }>;
+    submitCasinoGameMove: (sessionId: bigint, payload: Uint8Array) => Promise<{ txHash?: string }>;
+    submitCasinoToggleShield: () => Promise<{ txHash?: string }>;
+    submitCasinoToggleDouble: () => Promise<{ txHash?: string }>;
+  };
+}
+
+// Interface for raw events from the chain client
+interface RawCasinoGameStartedEvent {
+  session_id: string | number | bigint;
+  game_type: string;
+  bet: string | number | bigint;
+  initial_state: string;
+}
+
+interface RawCasinoGameMovedEvent {
+  session_id: string | number | bigint;
+  move_number: number;
+  new_state: string;
+}
+
+interface RawCasinoGameCompletedEvent {
+  session_id: string | number | bigint;
+  game_type: string;
+  payout: string | number | bigint;
+  final_chips: string | number | bigint;
+  was_shielded: boolean;
+  was_doubled: boolean;
+}
+
 // Session ID counter for generating unique session IDs
 let sessionIdCounter = BigInt(Date.now());
 
@@ -149,16 +183,16 @@ function deserializeCasinoGameCompleted(data: Uint8Array): CasinoGameCompletedEv
  * CasinoChainService - High-level service for casino on-chain interactions
  */
 export class CasinoChainService {
-  private client: CasinoClient;
+  private client: CasinoClientWithNonceManager;
   private gameStartedHandlers: ((event: CasinoGameStartedEvent) => void)[] = [];
   private gameMovedHandlers: ((event: CasinoGameMovedEvent) => void)[] = [];
   private gameCompletedHandlers: ((event: CasinoGameCompletedEvent) => void)[] = [];
 
   constructor(client: CasinoClient) {
-    this.client = client;
+    this.client = client as CasinoClientWithNonceManager;
 
     // Subscribe to typed events from the client
-    this.client.onEvent('CasinoGameStarted', (event: any) => {
+    this.client.onEvent('CasinoGameStarted', (event: RawCasinoGameStartedEvent) => {
       // DEBUG: Log raw event from chain
       console.log('[CasinoChainService] Raw CasinoGameStarted event:', {
         rawSessionId: event.session_id,
@@ -191,7 +225,7 @@ export class CasinoChainService {
       }
     });
 
-    this.client.onEvent('CasinoGameMoved', (event: any) => {
+    this.client.onEvent('CasinoGameMoved', (event: RawCasinoGameMovedEvent) => {
       try {
         const parsed: CasinoGameMovedEvent = {
           type: 'CasinoGameMoved',
@@ -205,7 +239,7 @@ export class CasinoChainService {
       }
     });
 
-    this.client.onEvent('CasinoGameCompleted', (event: any) => {
+    this.client.onEvent('CasinoGameCompleted', (event: RawCasinoGameCompletedEvent) => {
       // DEBUG: Log raw event from chain
       console.log('[CasinoChainService] Raw CasinoGameCompleted event:', {
         rawSessionId: event.session_id,
@@ -236,7 +270,7 @@ export class CasinoChainService {
     if (!hex || hex.length === 0) return new Uint8Array(0);
     const bytes = new Uint8Array(hex.length / 2);
     for (let i = 0; i < hex.length; i += 2) {
-      bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
     }
     return bytes;
   }
@@ -262,7 +296,7 @@ export class CasinoChainService {
    * @param name - The player name
    */
   async register(name: string): Promise<void> {
-    await (this.client as any).nonceManager.submitCasinoRegister(name);
+    await this.client.nonceManager.submitCasinoRegister(name);
   }
 
   /**
@@ -286,7 +320,7 @@ export class CasinoChainService {
     console.log('[CasinoChainService] startGameWithSessionId:', sessionId.toString(), 'type:', typeof sessionId);
 
     // Use the NonceManager to submit the transaction
-    const result = await (this.client as any).nonceManager.submitCasinoStartGame(gameType, bet, sessionId);
+    const result = await this.client.nonceManager.submitCasinoStartGame(gameType, bet, sessionId);
 
     return { sessionId, txHash: result.txHash };
   }
@@ -301,7 +335,7 @@ export class CasinoChainService {
     const sessionId = this.generateNextSessionId();
 
     // Use the NonceManager to submit the transaction
-    const result = await (this.client as any).nonceManager.submitCasinoStartGame(gameType, bet, sessionId);
+    const result = await this.client.nonceManager.submitCasinoStartGame(gameType, bet, sessionId);
 
     return { sessionId, txHash: result.txHash };
   }
@@ -310,7 +344,7 @@ export class CasinoChainService {
    * Send a move in the current game
    */
   async sendMove(sessionId: bigint, payload: Uint8Array): Promise<{ txHash?: string }> {
-    const result = await (this.client as any).nonceManager.submitCasinoGameMove(sessionId, payload);
+    const result = await this.client.nonceManager.submitCasinoGameMove(sessionId, payload);
     return { txHash: result.txHash };
   }
 
@@ -318,7 +352,7 @@ export class CasinoChainService {
    * Toggle shield modifier
    */
   async toggleShield(): Promise<{ txHash?: string }> {
-    const result = await (this.client as any).nonceManager.submitCasinoToggleShield();
+    const result = await this.client.nonceManager.submitCasinoToggleShield();
     return { txHash: result.txHash };
   }
 
@@ -326,7 +360,7 @@ export class CasinoChainService {
    * Toggle double modifier
    */
   async toggleDouble(): Promise<{ txHash?: string }> {
-    const result = await (this.client as any).nonceManager.submitCasinoToggleDouble();
+    const result = await this.client.nonceManager.submitCasinoToggleDouble();
     return { txHash: result.txHash };
   }
 

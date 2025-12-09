@@ -12,7 +12,14 @@ export const ROULETTE_NUMBERS = [
 ];
 export const RED_NUMBERS = [1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36];
 
-export const HELP_CONTENT: Record<string, any> = {
+interface HelpContent {
+  title: string;
+  win: string;
+  loss: string;
+  example: string;
+}
+
+export const HELP_CONTENT: Record<string, HelpContent> = {
     [GameType.BLACKJACK]: {
         title: "BLACKJACK",
         win: "Beat dealer's hand without going over 21. Blackjack (A+10/J/Q/K) pays 3:2.",
@@ -202,9 +209,6 @@ export const getHandValue = (cards: Card[]): number => {
   if (!cards || !Array.isArray(cards)) return 0;
   // Filter out undefined/null cards and cards with invalid values
   const validCards = cards.filter(c => c && typeof c.value === 'number' && !isNaN(c.value));
-  if (validCards.length !== cards.length) {
-    console.warn('[getHandValue] Some cards were invalid:', cards);
-  }
   let value = validCards.reduce((acc, c) => acc + c.value, 0);
   let aces = validCards.filter(c => c.rank === 'A').length;
   while (value > 21 && aces > 0) {

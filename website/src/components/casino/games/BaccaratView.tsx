@@ -1,18 +1,21 @@
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { GameState } from '../../../types';
 import { Hand } from '../GameComponents';
 import { getBaccaratValue } from '../../../utils/gameUtils';
 
-export const BaccaratView: React.FC<{ gameState: GameState }> = ({ gameState }) => {
+export const BaccaratView = React.memo<{ gameState: GameState }>(({ gameState }) => {
     // Consolidate main bet and side bets for display
-    const allBets = [
+    const allBets = useMemo(() => [
         { type: gameState.baccaratSelection, amount: gameState.bet },
         ...gameState.baccaratBets
-    ];
+    ], [gameState.baccaratSelection, gameState.bet, gameState.baccaratBets]);
 
-    const isPlayerSelected = gameState.baccaratSelection === 'PLAYER';
-    const isBankerSelected = gameState.baccaratSelection === 'BANKER';
+    const isPlayerSelected = useMemo(() => gameState.baccaratSelection === 'PLAYER', [gameState.baccaratSelection]);
+    const isBankerSelected = useMemo(() => gameState.baccaratSelection === 'BANKER', [gameState.baccaratSelection]);
+
+    const playerValue = useMemo(() => getBaccaratValue(gameState.playerCards), [gameState.playerCards]);
+    const bankerValue = useMemo(() => getBaccaratValue(gameState.dealerCards), [gameState.dealerCards]);
 
     // Player always GREEN if selected, else RED (because "other side is always red")
     // Wait, the prompt says "player's selected side is always green, and the other side is always red"
@@ -28,9 +31,9 @@ export const BaccaratView: React.FC<{ gameState: GameState }> = ({ gameState }) 
                 {/* Banker Area */}
                 <div className={`min-h-[120px] flex items-center justify-center transition-all duration-300 ${isBankerSelected ? 'scale-110 opacity-100' : 'scale-90 opacity-75'}`}>
                     {gameState.dealerCards.length > 0 ? (
-                        <Hand 
-                            cards={gameState.dealerCards} 
-                            title={`BANKER (${getBaccaratValue(gameState.dealerCards)})`}
+                        <Hand
+                            cards={gameState.dealerCards}
+                            title={`BANKER (${bankerValue})`}
                             forcedColor={bankerColor}
                         />
                     ) : (
@@ -51,9 +54,9 @@ export const BaccaratView: React.FC<{ gameState: GameState }> = ({ gameState }) 
                 {/* Player Area */}
                 <div className={`min-h-[120px] flex gap-8 items-center justify-center transition-all duration-300 ${isPlayerSelected ? 'scale-110 opacity-100' : 'scale-90 opacity-75'}`}>
                     {gameState.playerCards.length > 0 ? (
-                        <Hand 
-                            cards={gameState.playerCards} 
-                            title={`PLAYER (${getBaccaratValue(gameState.playerCards)})`} 
+                        <Hand
+                            cards={gameState.playerCards}
+                            title={`PLAYER (${playerValue})`}
                             forcedColor={playerColor}
                         />
                     ) : (
@@ -135,4 +138,4 @@ export const BaccaratView: React.FC<{ gameState: GameState }> = ({ gameState }) 
             </div>
         </>
     );
-};
+});

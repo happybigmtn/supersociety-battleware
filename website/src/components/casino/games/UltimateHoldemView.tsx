@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { GameState } from '../../../types';
 import { Hand } from '../GameComponents';
 
@@ -16,9 +16,16 @@ const getStageDescription = (stage: string, communityCards: number): string => {
     return '';
 };
 
-export const UltimateHoldemView: React.FC<UltimateHoldemViewProps> = ({ gameState }) => {
-    const stageDesc = getStageDescription(gameState.stage, gameState.communityCards.length);
-    const showDealerCards = gameState.stage === 'RESULT' || gameState.dealerCards.every(c => !c.isHidden);
+export const UltimateHoldemView = React.memo<UltimateHoldemViewProps>(({ gameState }) => {
+    const stageDesc = useMemo(() =>
+        getStageDescription(gameState.stage, gameState.communityCards.length),
+        [gameState.stage, gameState.communityCards.length]
+    );
+
+    const showDealerCards = useMemo(() =>
+        gameState.stage === 'RESULT' || gameState.dealerCards.every(c => !c.isHidden),
+        [gameState.stage, gameState.dealerCards]
+    );
 
     return (
         <>
@@ -194,4 +201,4 @@ export const UltimateHoldemView: React.FC<UltimateHoldemViewProps> = ({ gameStat
             </div>
         </>
     );
-};
+});

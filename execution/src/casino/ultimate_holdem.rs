@@ -254,23 +254,23 @@ impl CasinoGame for UltimateHoldem {
 
         // Deal player cards
         let player = [
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
+            rng.draw_card(&mut deck).unwrap_or(0),
+            rng.draw_card(&mut deck).unwrap_or(1),
         ];
 
         // Deal community cards
         let community = [
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
+            rng.draw_card(&mut deck).unwrap_or(2),
+            rng.draw_card(&mut deck).unwrap_or(3),
+            rng.draw_card(&mut deck).unwrap_or(4),
+            rng.draw_card(&mut deck).unwrap_or(5),
+            rng.draw_card(&mut deck).unwrap_or(6),
         ];
 
         // Deal dealer cards
         let dealer = [
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
+            rng.draw_card(&mut deck).unwrap_or(7),
+            rng.draw_card(&mut deck).unwrap_or(8),
         ];
 
         session.state_blob = serialize_state(Stage::Preflop, &player, &community, &dealer, 0);
@@ -539,7 +539,7 @@ mod tests {
         // Check to river
         for i in 1..=2 {
             let mut rng = GameRng::new(&seed, session.id, i);
-            UltimateHoldem::process_move(&mut session, &[0], &mut rng).unwrap();
+            UltimateHoldem::process_move(&mut session, &[0], &mut rng).expect("Failed to process move");
         }
 
         // Fold at river
@@ -565,7 +565,7 @@ mod tests {
 
         // Check preflop first
         let mut rng = GameRng::new(&seed, session.id, 1);
-        UltimateHoldem::process_move(&mut session, &[0], &mut rng).unwrap();
+        UltimateHoldem::process_move(&mut session, &[0], &mut rng).expect("Failed to process move");
 
         // Try to bet 4x at flop (invalid)
         let mut rng = GameRng::new(&seed, session.id, 2);
@@ -582,13 +582,13 @@ mod tests {
         UltimateHoldem::init(&mut session, &mut rng);
 
         let (stage, player, community, dealer, play_bet) =
-            parse_state(&session.state_blob).unwrap();
+            parse_state(&session.state_blob).expect("Failed to parse state");
 
         assert_eq!(stage, Stage::Preflop);
         assert_eq!(play_bet, 0);
 
         // All 9 cards should be unique
-        let mut all_cards = Vec::new();
+        let mut all_cards = Vec::with_capacity(player.len() + community.len() + dealer.len());
         all_cards.extend_from_slice(&player);
         all_cards.extend_from_slice(&community);
         all_cards.extend_from_slice(&dealer);

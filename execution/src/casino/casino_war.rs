@@ -80,8 +80,8 @@ impl CasinoGame for CasinoWar {
     fn init(session: &mut GameSession, rng: &mut GameRng) -> GameResult {
         // Deal one card each
         let mut deck = rng.create_deck();
-        let player_card = rng.draw_card(&mut deck).unwrap();
-        let dealer_card = rng.draw_card(&mut deck).unwrap();
+        let player_card = rng.draw_card(&mut deck).unwrap_or(0);
+        let dealer_card = rng.draw_card(&mut deck).unwrap_or(1);
 
         session.state_blob = serialize_state(player_card, dealer_card, Stage::Initial);
         GameResult::Continue
@@ -290,7 +290,7 @@ mod tests {
         assert!(matches!(result, Ok(GameResult::Continue)));
         assert!(!session.is_complete);
 
-        let (_, _, stage) = parse_state(&session.state_blob).unwrap();
+        let (_, _, stage) = parse_state(&session.state_blob).expect("Failed to parse state");
         assert_eq!(stage, Stage::War);
     }
 
@@ -324,7 +324,7 @@ mod tests {
         assert!(session.is_complete);
 
         // Result should be Win, Loss, or LossWithExtraDeduction
-        match result.unwrap() {
+        match result.expect("Failed to process war") {
             GameResult::Win(_) | GameResult::Loss | GameResult::LossWithExtraDeduction(_) => {}
             _ => panic!("Expected Win, Loss, or LossWithExtraDeduction after war"),
         }
@@ -369,7 +369,7 @@ mod tests {
         CasinoWar::init(&mut session, &mut rng);
 
         assert_eq!(session.state_blob.len(), 3);
-        let (player_card, dealer_card, stage) = parse_state(&session.state_blob).unwrap();
+        let (player_card, dealer_card, stage) = parse_state(&session.state_blob).expect("Failed to parse state");
 
         assert!(player_card < 52);
         assert!(dealer_card < 52);

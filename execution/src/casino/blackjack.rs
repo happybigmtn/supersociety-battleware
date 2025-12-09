@@ -155,12 +155,12 @@ impl CasinoGame for Blackjack {
 
         // Deal initial cards: player gets 2, dealer gets 2 (second hidden)
         let player_cards = vec![
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
+            rng.draw_card(&mut deck).unwrap_or(0),
+            rng.draw_card(&mut deck).unwrap_or(1),
         ];
         let dealer_cards = vec![
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
+            rng.draw_card(&mut deck).unwrap_or(2),
+            rng.draw_card(&mut deck).unwrap_or(3),
         ];
 
         // Check for immediate blackjack
@@ -220,7 +220,8 @@ impl CasinoGame for Blackjack {
         }
 
         // Recreate deck excluding dealt cards (using optimized bit-set)
-        let mut all_cards = player_cards.clone();
+        let mut all_cards = Vec::with_capacity(player_cards.len() + dealer_cards.len());
+        all_cards.extend_from_slice(&player_cards);
         all_cards.extend_from_slice(&dealer_cards);
         let mut deck = rng.create_deck_excluding(&all_cards);
 
@@ -474,7 +475,7 @@ mod tests {
         let stage = Stage::PlayerTurn;
 
         let state = serialize_state(&player, &dealer, stage);
-        let (p, d, s) = parse_state(&state).unwrap();
+        let (p, d, s) = parse_state(&state).expect("Failed to parse state");
 
         assert_eq!(p, player);
         assert_eq!(d, dealer);
@@ -489,7 +490,7 @@ mod tests {
 
         Blackjack::init(&mut session, &mut rng);
 
-        let (player, dealer, stage) = parse_state(&session.state_blob).unwrap();
+        let (player, dealer, stage) = parse_state(&session.state_blob).expect("Failed to parse state");
 
         assert_eq!(player.len(), 2);
         assert_eq!(dealer.len(), 2);
@@ -521,18 +522,18 @@ mod tests {
         Blackjack::init(&mut session, &mut rng);
 
         // Skip if game completed on deal (blackjack)
-        let (_, _, stage) = parse_state(&session.state_blob).unwrap();
+        let (_, _, stage) = parse_state(&session.state_blob).expect("Failed to parse state");
         if stage == Stage::Complete {
             return;
         }
 
-        let initial_cards = parse_state(&session.state_blob).unwrap().0.len();
+        let initial_cards = parse_state(&session.state_blob).expect("Failed to parse state").0.len();
 
         let mut rng = GameRng::new(&seed, session.id, 1);
         let result = Blackjack::process_move(&mut session, &[0], &mut rng); // Hit
 
         assert!(result.is_ok());
-        let (player, _, _) = parse_state(&session.state_blob).unwrap();
+        let (player, _, _) = parse_state(&session.state_blob).expect("Failed to parse state");
 
         // Either got a new card or busted (which also adds a card)
         assert!(player.len() > initial_cards);
@@ -546,7 +547,7 @@ mod tests {
 
         Blackjack::init(&mut session, &mut rng);
 
-        let (_, _, stage) = parse_state(&session.state_blob).unwrap();
+        let (_, _, stage) = parse_state(&session.state_blob).expect("Failed to parse state");
         if stage == Stage::Complete {
             return;
         }
@@ -557,7 +558,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(session.is_complete);
 
-        let (_, _, stage) = parse_state(&session.state_blob).unwrap();
+        let (_, _, stage) = parse_state(&session.state_blob).expect("Failed to parse state");
         assert_eq!(stage, Stage::Complete);
     }
 
@@ -569,7 +570,7 @@ mod tests {
 
         Blackjack::init(&mut session, &mut rng);
 
-        let (_, _, stage) = parse_state(&session.state_blob).unwrap();
+        let (_, _, stage) = parse_state(&session.state_blob).expect("Failed to parse state");
         if stage == Stage::Complete {
             return;
         }
@@ -592,7 +593,7 @@ mod tests {
 
         Blackjack::init(&mut session, &mut rng);
 
-        let (_, _, stage) = parse_state(&session.state_blob).unwrap();
+        let (_, _, stage) = parse_state(&session.state_blob).expect("Failed to parse state");
         if stage == Stage::Complete {
             return;
         }

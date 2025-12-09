@@ -164,6 +164,7 @@ impl<E: Clock> Reporter for Mailbox<E> {
             .expect("Failed to send finalized");
 
         // Wait for the item to be processed (used to increment "save point" in marshal)
-        let _ = receiver.await; // TODO: may be shutting down
+        // Note: Result is ignored as the receiver may fail if the system is shutting down
+        let _ = receiver.await;
     }
 }

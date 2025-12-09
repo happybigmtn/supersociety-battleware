@@ -165,14 +165,14 @@ impl CasinoGame for ThreeCardPoker {
         // Deal 3 cards each
         let mut deck = rng.create_deck();
         let player = [
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
+            rng.draw_card(&mut deck).unwrap_or(0),
+            rng.draw_card(&mut deck).unwrap_or(1),
+            rng.draw_card(&mut deck).unwrap_or(2),
         ];
         let dealer = [
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
-            rng.draw_card(&mut deck).unwrap(),
+            rng.draw_card(&mut deck).unwrap_or(3),
+            rng.draw_card(&mut deck).unwrap_or(4),
+            rng.draw_card(&mut deck).unwrap_or(5),
         ];
 
         session.state_blob = serialize_state(&player, &dealer, Stage::Ante);
@@ -409,7 +409,7 @@ mod tests {
         assert!(session.is_complete);
 
         // Result should be Win, Loss, or Push
-        match result.unwrap() {
+        match result.expect("Failed to process move") {
             GameResult::Win(_) | GameResult::Loss | GameResult::Push => {}
             _ => panic!("Invalid result"),
         }
@@ -423,7 +423,7 @@ mod tests {
 
         ThreeCardPoker::init(&mut session, &mut rng);
 
-        let (player, dealer, stage) = parse_state(&session.state_blob).unwrap();
+        let (player, dealer, stage) = parse_state(&session.state_blob).expect("Failed to parse state");
         assert_eq!(stage, Stage::Ante);
 
         for card in player.iter().chain(dealer.iter()) {

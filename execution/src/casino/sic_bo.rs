@@ -70,7 +70,9 @@ pub struct SicBoBet {
 
 impl SicBoBet {
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = vec![self.bet_type as u8, self.number];
+        let mut bytes = Vec::with_capacity(10);
+        bytes.push(self.bet_type as u8);
+        bytes.push(self.number);
         bytes.extend_from_slice(&self.amount.to_be_bytes());
         bytes
     }
@@ -131,7 +133,10 @@ impl SicBoState {
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = vec![self.bets.len() as u8];
+        // Capacity: 1 (bet count) + bets (10 bytes each) + 3 (optional dice)
+        let capacity = 1 + (self.bets.len() * 10) + if self.dice.is_some() { 3 } else { 0 };
+        let mut bytes = Vec::with_capacity(capacity);
+        bytes.push(self.bets.len() as u8);
         for bet in &self.bets {
             bytes.extend(bet.to_bytes());
         }
@@ -467,10 +472,10 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(!session.is_complete); // Not complete until dice rolled
-        assert!(matches!(result.unwrap(), GameResult::Continue));
+        assert!(matches!(result.expect("Failed to process move"), GameResult::Continue));
 
         // Verify bet was stored
-        let state = SicBoState::from_bytes(&session.state_blob).unwrap();
+        let state = SicBoState::from_bytes(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 1);
         assert_eq!(state.bets[0].bet_type, BetType::Small);
         assert_eq!(state.bets[0].amount, 100);
@@ -500,9 +505,9 @@ mod tests {
         assert!(session.is_complete);
 
         // Verify dice were rolled and stored
-        let state = SicBoState::from_bytes(&session.state_blob).unwrap();
+        let state = SicBoState::from_bytes(&session.state_blob).expect("Failed to parse state");
         assert!(state.dice.is_some());
-        let dice = state.dice.unwrap();
+        let dice = state.dice.expect("Dice should be rolled");
         for die in dice.iter() {
             assert!(*die >= 1 && *die <= 6);
         }
@@ -560,10 +565,10 @@ mod tests {
         // Place a bet
         let payload = place_bet_payload(0, 0, 100);
         let mut rng = GameRng::new(&seed, session.id, 1);
-        SicBo::process_move(&mut session, &payload, &mut rng).unwrap();
+        SicBo::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Verify bet was placed
-        let state = SicBoState::from_bytes(&session.state_blob).unwrap();
+        let state = SicBoState::from_bytes(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 1);
 
         // Clear bets
@@ -572,7 +577,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify bets were cleared
-        let state = SicBoState::from_bytes(&session.state_blob).unwrap();
+        let state = SicBoState::from_bytes(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 0);
     }
 
@@ -587,15 +592,15 @@ mod tests {
         // Place Small bet
         let payload = place_bet_payload(0, 0, 50);
         let mut rng = GameRng::new(&seed, session.id, 1);
-        SicBo::process_move(&mut session, &payload, &mut rng).unwrap();
+        SicBo::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Place Big bet
         let payload = place_bet_payload(1, 0, 50);
         let mut rng = GameRng::new(&seed, session.id, 2);
-        SicBo::process_move(&mut session, &payload, &mut rng).unwrap();
+        SicBo::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Verify both bets were placed
-        let state = SicBoState::from_bytes(&session.state_blob).unwrap();
+        let state = SicBoState::from_bytes(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 2);
         assert_eq!(state.bets[0].bet_type, BetType::Small);
         assert_eq!(state.bets[1].bet_type, BetType::Big);
@@ -622,7 +627,7 @@ mod tests {
             // Place Small bet
             let payload = place_bet_payload(0, 0, 100);
             let mut rng = GameRng::new(&seed, session_id, 1);
-            SicBo::process_move(&mut session, &payload, &mut rng).unwrap();
+            SicBo::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
             // Roll dice
             let mut rng = GameRng::new(&seed, session_id, 2);
@@ -631,7 +636,7 @@ mod tests {
             assert!(result.is_ok());
             assert!(session.is_complete);
 
-            match result.unwrap() {
+            match result.expect("Failed to process move") {
                 GameResult::Win(_) | GameResult::Loss | GameResult::Push => {}
                 _ => panic!("SicBo should complete with Win, Loss, or Push"),
             }

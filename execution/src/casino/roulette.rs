@@ -155,7 +155,9 @@ impl RouletteState {
 
     /// Serialize state to blob
     fn to_blob(&self) -> Vec<u8> {
-        let mut blob = Vec::new();
+        // Capacity: 1 (bet count) + bets (10 bytes each) + 1 (optional result)
+        let capacity = 1 + (self.bets.len() * 10) + if self.result.is_some() { 1 } else { 0 };
+        let mut blob = Vec::with_capacity(capacity);
         blob.push(self.bets.len() as u8);
         for bet in &self.bets {
             blob.extend_from_slice(&bet.to_bytes());
@@ -181,7 +183,7 @@ impl RouletteState {
         let bet_count = blob[offset] as usize;
         offset += 1;
 
-        let mut bets = Vec::new();
+        let mut bets = Vec::with_capacity(bet_count);
         for _ in 0..bet_count {
             if offset + 10 > blob.len() {
                 return None;
@@ -504,7 +506,7 @@ mod tests {
         assert!(!session.is_complete); // Game continues - need to spin
 
         // Verify bet was stored
-        let state = RouletteState::from_blob(&session.state_blob).unwrap();
+        let state = RouletteState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 1);
         assert_eq!(state.bets[0].bet_type, BetType::Red);
         assert_eq!(state.bets[0].amount, 100);
@@ -522,7 +524,7 @@ mod tests {
         // Place a red bet
         let mut rng = GameRng::new(&seed, session.id, 1);
         let payload = place_bet_payload(BetType::Red, 0, 100);
-        Roulette::process_move(&mut session, &payload, &mut rng).unwrap();
+        Roulette::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Spin the wheel
         let mut rng = GameRng::new(&seed, session.id, 2);
@@ -532,9 +534,9 @@ mod tests {
         assert!(session.is_complete);
 
         // State should have bet and result
-        let state = RouletteState::from_blob(&session.state_blob).unwrap();
+        let state = RouletteState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert!(state.result.is_some());
-        assert!(state.result.unwrap() <= 36);
+        assert!(state.result.expect("Result should be set") <= 36);
     }
 
     #[test]
@@ -548,18 +550,18 @@ mod tests {
         // Place multiple bets
         let mut rng = GameRng::new(&seed, session.id, 1);
         let payload = place_bet_payload(BetType::Red, 0, 50);
-        Roulette::process_move(&mut session, &payload, &mut rng).unwrap();
+        Roulette::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         let mut rng = GameRng::new(&seed, session.id, 2);
         let payload = place_bet_payload(BetType::Straight, 17, 25);
-        Roulette::process_move(&mut session, &payload, &mut rng).unwrap();
+        Roulette::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         let mut rng = GameRng::new(&seed, session.id, 3);
         let payload = place_bet_payload(BetType::Odd, 0, 25);
-        Roulette::process_move(&mut session, &payload, &mut rng).unwrap();
+        Roulette::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Verify all bets stored
-        let state = RouletteState::from_blob(&session.state_blob).unwrap();
+        let state = RouletteState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.bets.len(), 3);
 
         // Spin
@@ -616,7 +618,7 @@ mod tests {
         // Place a bet
         let mut rng = GameRng::new(&seed, session.id, 1);
         let payload = place_bet_payload(BetType::Red, 0, 100);
-        Roulette::process_move(&mut session, &payload, &mut rng).unwrap();
+        Roulette::process_move(&mut session, &payload, &mut rng).expect("Failed to process move");
 
         // Clear bets
         let mut rng = GameRng::new(&seed, session.id, 2);
@@ -624,7 +626,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify bets cleared
-        let state = RouletteState::from_blob(&session.state_blob).unwrap();
+        let state = RouletteState::from_blob(&session.state_blob).expect("Failed to parse state");
         assert!(state.bets.is_empty());
     }
 
@@ -642,7 +644,7 @@ mod tests {
             // Place bet on number 0
             let mut rng = GameRng::new(&seed, session_id, 1);
             let payload = place_bet_payload(BetType::Straight, 0, 100);
-            Roulette::process_move(&mut test_session, &payload, &mut rng).unwrap();
+            Roulette::process_move(&mut test_session, &payload, &mut rng).expect("Failed to process move");
 
             // Spin
             let mut rng = GameRng::new(&seed, session_id, 2);
