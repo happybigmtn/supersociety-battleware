@@ -289,7 +289,7 @@ impl CasinoGame for Roulette {
                 state.bets.push(RouletteBet { bet_type, number, amount });
 
                 session.state_blob = state.to_blob();
-                Ok(GameResult::Continue)
+                Ok(GameResult::ContinueWithUpdate { payout: -(amount as i64) })
             }
 
             // [1] - Spin wheel and resolve all bets

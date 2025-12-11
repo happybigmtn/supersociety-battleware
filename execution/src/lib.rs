@@ -21,6 +21,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     future::Future,
 };
+use tracing::warn;
 
 pub mod casino;
 mod fixed;
@@ -51,17 +52,27 @@ pub trait State {
 impl<E: Spawner + Metrics + Clock + Storage, T: Translator> State for Adb<E, T> {
     async fn get(&self, key: &Key) -> Option<Value> {
         let key = Sha256::hash(&key.encode());
-        self.get(&key).await.unwrap()
+        match self.get(&key).await {
+            Ok(value) => value,
+            Err(e) => {
+                warn!("Database error during get operation: {:?}", e);
+                None
+            }
+        }
     }
 
     async fn insert(&mut self, key: Key, value: Value) {
         let key = Sha256::hash(&key.encode());
-        self.update(key, value).await.unwrap();
+        if let Err(e) = self.update(key, value).await {
+            warn!("Database error during insert operation: {:?}", e);
+        }
     }
 
     async fn delete(&mut self, key: &Key) {
         let key = Sha256::hash(&key.encode());
-        self.delete(key).await.unwrap();
+        if let Err(e) = self.delete(key).await {
+            warn!("Database error during delete operation: {:?}", e);
+        }
     }
 }
 
@@ -310,6 +321,10 @@ impl<'a, S: State> Layer<'a, S> {
                 self.handle_casino_join_tournament(&transaction.public, *tournament_id)
                     .await
             }
+            Instruction::CasinoStartTournament { tournament_id, start_time_ms, end_time_ms } => {
+                self.handle_casino_start_tournament(&transaction.public, *tournament_id, *start_time_ms, *end_time_ms)
+                    .await
+            }
         }
     }
 
@@ -318,7 +333,12 @@ impl<'a, S: State> Layer<'a, S> {
     async fn handle_casino_register(&mut self, public: &PublicKey, name: &str) -> Vec<Event> {
         // Check if player already exists
         if self.get(&Key::CasinoPlayer(public.clone())).await.is_some() {
-            return vec![]; // Player already registered
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: None,
+                error_code: nullspace_types::casino::ERROR_PLAYER_ALREADY_REGISTERED,
+                message: "Player already registered".to_string(),
+            }];
         }
 
         // Create new player with initial chips and current block for rate limiting
@@ -329,8 +349,11 @@ impl<'a, S: State> Layer<'a, S> {
 
         self.insert(
             Key::CasinoPlayer(public.clone()),
-            Value::CasinoPlayer(player),
+            Value::CasinoPlayer(player.clone()),
         );
+
+        // Update leaderboard with initial chips
+        self.update_casino_leaderboard(public, &player).await;
 
         vec![Event::CasinoPlayerRegistered {
             player: public.clone(),
@@ -341,13 +364,25 @@ impl<'a, S: State> Layer<'a, S> {
     async fn handle_casino_deposit(&mut self, public: &PublicKey, _amount: u64) -> Vec<Event> {
         let mut player = match self.get(&Key::CasinoPlayer(public.clone())).await {
             Some(Value::CasinoPlayer(p)) => p,
-            _ => return vec![],
+            _ => {
+                return vec![Event::CasinoError {
+                    player: public.clone(),
+                    session_id: None,
+                    error_code: nullspace_types::casino::ERROR_PLAYER_NOT_FOUND,
+                    message: "Player not found".to_string(),
+                }]
+            }
         };
 
         // Check rate limiting
         let current_block = self.seed.view;
         if player.last_deposit_block + nullspace_types::casino::FAUCET_RATE_LIMIT > current_block {
-            return vec![];
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: None,
+                error_code: nullspace_types::casino::ERROR_RATE_LIMITED,
+                message: "Faucet rate limited, try again later".to_string(),
+            }];
         }
 
         // Grant faucet chips
@@ -377,17 +412,42 @@ impl<'a, S: State> Layer<'a, S> {
         // Get player
         let mut player = match self.get(&Key::CasinoPlayer(public.clone())).await {
             Some(Value::CasinoPlayer(p)) => p,
-            _ => return vec![],
+            _ => {
+                return vec![Event::CasinoError {
+                    player: public.clone(),
+                    session_id: Some(session_id),
+                    error_code: nullspace_types::casino::ERROR_PLAYER_NOT_FOUND,
+                    message: "Player not found".to_string(),
+                }]
+            }
         };
 
         // Check player has enough chips
-        if player.chips < bet || bet == 0 {
-            return vec![];
+        if bet == 0 {
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: Some(session_id),
+                error_code: nullspace_types::casino::ERROR_INVALID_BET,
+                message: "Bet must be greater than zero".to_string(),
+            }];
+        }
+        if player.chips < bet {
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: Some(session_id),
+                error_code: nullspace_types::casino::ERROR_INSUFFICIENT_FUNDS,
+                message: format!("Insufficient chips: have {}, need {}", player.chips, bet),
+            }];
         }
 
         // Check for existing session
         if self.get(&Key::CasinoSession(session_id)).await.is_some() {
-            return vec![];
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: Some(session_id),
+                error_code: nullspace_types::casino::ERROR_SESSION_EXISTS,
+                message: "Session already exists".to_string(),
+            }];
         }
 
         // Deduct bet from player
@@ -396,6 +456,9 @@ impl<'a, S: State> Layer<'a, S> {
             Key::CasinoPlayer(public.clone()),
             Value::CasinoPlayer(player.clone()),
         );
+
+        // Update leaderboard after bet deduction
+        self.update_casino_leaderboard(public, &player).await;
 
         // Create game session
         let mut session = nullspace_types::casino::GameSession {
@@ -464,6 +527,9 @@ impl<'a, S: State> Layer<'a, S> {
                         let final_chips = player.chips;
                         self.insert(Key::CasinoPlayer(public.clone()), Value::CasinoPlayer(player.clone()));
 
+                        // Update leaderboard after push
+                        self.update_casino_leaderboard(public, &player).await;
+
                         events.push(Event::CasinoGameCompleted {
                             session_id,
                             player: public.clone(),
@@ -487,6 +553,9 @@ impl<'a, S: State> Layer<'a, S> {
 
                         let final_chips = player.chips;
                         self.insert(Key::CasinoPlayer(public.clone()), Value::CasinoPlayer(player.clone()));
+
+                        // Update leaderboard after immediate loss
+                        self.update_casino_leaderboard(public, &player).await;
 
                         events.push(Event::CasinoGameCompleted {
                             session_id,
@@ -515,12 +584,32 @@ impl<'a, S: State> Layer<'a, S> {
         // Get session
         let mut session = match self.get(&Key::CasinoSession(session_id)).await {
             Some(Value::CasinoSession(s)) => s,
-            _ => return vec![],
+            _ => {
+                return vec![Event::CasinoError {
+                    player: public.clone(),
+                    session_id: Some(session_id),
+                    error_code: nullspace_types::casino::ERROR_SESSION_NOT_FOUND,
+                    message: "Session not found".to_string(),
+                }]
+            }
         };
 
         // Verify ownership and not complete
-        if session.player != *public || session.is_complete {
-            return vec![];
+        if session.player != *public {
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: Some(session_id),
+                error_code: nullspace_types::casino::ERROR_SESSION_NOT_OWNED,
+                message: "Session does not belong to this player".to_string(),
+            }];
+        }
+        if session.is_complete {
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: Some(session_id),
+                error_code: nullspace_types::casino::ERROR_SESSION_COMPLETE,
+                message: "Session already complete".to_string(),
+            }];
         }
 
         // Process move
@@ -529,7 +618,14 @@ impl<'a, S: State> Layer<'a, S> {
 
         let result = match crate::casino::process_game_move(&mut session, payload, &mut rng) {
             Ok(r) => r,
-            Err(_) => return vec![],
+            Err(_) => {
+                return vec![Event::CasinoError {
+                    player: public.clone(),
+                    session_id: Some(session_id),
+                    error_code: nullspace_types::casino::ERROR_INVALID_MOVE,
+                    message: "Invalid game move".to_string(),
+                }]
+            }
         };
 
         let move_number = session.move_count;
@@ -559,7 +655,15 @@ impl<'a, S: State> Layer<'a, S> {
                             .unwrap_or(0);
                         if deduction == 0 || player.chips < deduction {
                             // Insufficient funds or overflow - reject the move
-                            return vec![];
+                            return vec![Event::CasinoError {
+                                player: public.clone(),
+                                session_id: Some(session_id),
+                                error_code: nullspace_types::casino::ERROR_INSUFFICIENT_FUNDS,
+                                message: format!(
+                                    "Insufficient chips for additional bet: have {}, need {}",
+                                    player.chips, deduction
+                                ),
+                            }];
                         }
                         player.chips = player.chips.saturating_sub(deduction);
                     } else {
@@ -568,7 +672,10 @@ impl<'a, S: State> Layer<'a, S> {
                         let addition = u64::try_from(payout).unwrap_or(0);
                         player.chips = player.chips.saturating_add(addition);
                     }
-                    self.insert(Key::CasinoPlayer(public.clone()), Value::CasinoPlayer(player));
+                    self.insert(Key::CasinoPlayer(public.clone()), Value::CasinoPlayer(player.clone()));
+
+                    // Update leaderboard after mid-game balance change
+                    self.update_casino_leaderboard(public, &player).await;
                 }
                 self.insert(Key::CasinoSession(session_id), Value::CasinoSession(session));
             }
@@ -622,6 +729,9 @@ impl<'a, S: State> Layer<'a, S> {
                     let final_chips = player.chips;
                     self.insert(Key::CasinoPlayer(public.clone()), Value::CasinoPlayer(player.clone()));
 
+                    // Update leaderboard after push
+                    self.update_casino_leaderboard(public, &player).await;
+
                     events.push(Event::CasinoGameCompleted {
                         session_id,
                         player: public.clone(),
@@ -652,6 +762,9 @@ impl<'a, S: State> Layer<'a, S> {
 
                     let final_chips = player.chips;
                     self.insert(Key::CasinoPlayer(public.clone()), Value::CasinoPlayer(player.clone()));
+
+                    // Update leaderboard after loss
+                    self.update_casino_leaderboard(public, &player).await;
 
                     events.push(Event::CasinoGameCompleted {
                         session_id,
@@ -690,11 +803,54 @@ impl<'a, S: State> Layer<'a, S> {
                     let final_chips = player.chips;
                     self.insert(Key::CasinoPlayer(public.clone()), Value::CasinoPlayer(player.clone()));
 
+                    // Update leaderboard after loss with extra deduction
+                    self.update_casino_leaderboard(public, &player).await;
+
                     events.push(Event::CasinoGameCompleted {
                         session_id,
                         player: public.clone(),
                         game_type: session.game_type,
                         payout: payout - (extra as i64), // Total loss includes extra
+                        final_chips,
+                        was_shielded,
+                        was_doubled: false,
+                    });
+                }
+            }
+            crate::casino::GameResult::LossPreDeducted(total_loss) => {
+                // Loss where chips were already deducted via ContinueWithUpdate
+                // (e.g., Baccarat, Craps, Roulette, Sic Bo table games)
+                // No additional chip deduction needed, just report the loss amount
+                session.is_complete = true;
+                self.insert(Key::CasinoSession(session_id), Value::CasinoSession(session.clone()));
+
+                if let Some(Value::CasinoPlayer(mut player)) =
+                    self.get(&Key::CasinoPlayer(public.clone())).await
+                {
+                    let was_shielded = player.active_shield && player.shields > 0;
+                    let payout = if was_shielded {
+                        // Shield prevents loss - refund the pre-deducted amount
+                        player.shields -= 1;
+                        player.chips = player.chips.saturating_add(total_loss);
+                        0
+                    } else {
+                        -(total_loss as i64)
+                    };
+
+                    player.active_shield = false;
+                    player.active_double = false;
+
+                    let final_chips = player.chips;
+                    self.insert(Key::CasinoPlayer(public.clone()), Value::CasinoPlayer(player.clone()));
+
+                    // Update leaderboard after pre-deducted loss
+                    self.update_casino_leaderboard(public, &player).await;
+
+                    events.push(Event::CasinoGameCompleted {
+                        session_id,
+                        player: public.clone(),
+                        game_type: session.game_type,
+                        payout,
                         final_chips,
                         was_shielded,
                         was_doubled: false,
@@ -725,7 +881,12 @@ impl<'a, S: State> Layer<'a, S> {
     async fn handle_casino_join_tournament(&mut self, public: &PublicKey, tournament_id: u64) -> Vec<Event> {
         // Verify player exists
         if self.get(&Key::CasinoPlayer(public.clone())).await.is_none() {
-            return vec![];
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: None,
+                error_code: nullspace_types::casino::ERROR_PLAYER_NOT_FOUND,
+                message: "Player not found".to_string(),
+            }];
         }
 
         // Get or create tournament
@@ -735,6 +896,8 @@ impl<'a, S: State> Layer<'a, S> {
                 id: tournament_id,
                 phase: nullspace_types::casino::TournamentPhase::Registration,
                 start_block: 0,
+                start_time_ms: 0,
+                end_time_ms: 0,
                 players: Vec::new(),
                 starting_chips: nullspace_types::casino::STARTING_CHIPS,
                 starting_shields: nullspace_types::casino::STARTING_SHIELDS,
@@ -744,12 +907,22 @@ impl<'a, S: State> Layer<'a, S> {
 
         // Check if can join
         if !matches!(tournament.phase, nullspace_types::casino::TournamentPhase::Registration) {
-            return vec![];
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: None,
+                error_code: nullspace_types::casino::ERROR_TOURNAMENT_NOT_REGISTERING,
+                message: "Tournament is not in registration phase".to_string(),
+            }];
         }
 
         // Add player (check not already joined)
         if !tournament.add_player(public.clone()) {
-            return vec![]; // Already joined
+            return vec![Event::CasinoError {
+                player: public.clone(),
+                session_id: None,
+                error_code: nullspace_types::casino::ERROR_ALREADY_IN_TOURNAMENT,
+                message: "Already joined this tournament".to_string(),
+            }];
         }
         self.insert(Key::Tournament(tournament_id), Value::Tournament(tournament));
 
@@ -757,6 +930,57 @@ impl<'a, S: State> Layer<'a, S> {
             tournament_id,
             player: public.clone(),
         }]
+    }
+
+    async fn handle_casino_start_tournament(
+        &mut self,
+        public: &PublicKey,
+        tournament_id: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+    ) -> Vec<Event> {
+        // Always create a fresh tournament when starting
+        // This allows restarting tournaments (e.g., after one ends)
+        let mut tournament = nullspace_types::casino::Tournament {
+            id: tournament_id,
+            phase: nullspace_types::casino::TournamentPhase::Active, // Start directly in Active
+            start_block: self.seed.view,
+            start_time_ms,
+            end_time_ms,
+            players: Vec::new(),
+            starting_chips: nullspace_types::casino::STARTING_CHIPS,
+            starting_shields: nullspace_types::casino::STARTING_SHIELDS,
+            starting_doubles: nullspace_types::casino::STARTING_DOUBLES,
+        };
+
+        // Add the starting player to the tournament
+        tournament.players.push(public.clone());
+
+        // Reset the starting player's chips/shields/doubles to starting values
+        let mut events = Vec::new();
+        if let Some(Value::CasinoPlayer(mut player)) = self.get(&Key::CasinoPlayer(public.clone())).await {
+            player.chips = tournament.starting_chips;
+            player.shields = tournament.starting_shields;
+            player.doubles = tournament.starting_doubles;
+            player.active_shield = false;
+            player.active_double = false;
+            player.active_session = None;
+            player.aura_meter = 0;
+
+            self.insert(Key::CasinoPlayer(public.clone()), Value::CasinoPlayer(player.clone()));
+
+            // Update leaderboard for this player
+            self.update_casino_leaderboard(public, &player).await;
+        }
+
+        self.insert(Key::Tournament(tournament_id), Value::Tournament(tournament.clone()));
+
+        events.push(Event::TournamentStarted {
+            id: tournament_id,
+            start_block: self.seed.view,
+        });
+
+        events
     }
 
     async fn update_casino_leaderboard(&mut self, public: &PublicKey, player: &nullspace_types::casino::Player) {

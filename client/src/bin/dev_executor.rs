@@ -11,11 +11,14 @@ use nullspace_execution::mocks::{create_adbs, create_network_keypair, execute_bl
 use nullspace_types::{api, execution::Transaction, Identity};
 use clap::Parser;
 use commonware_codec::DecodeExt;
-use commonware_runtime::{tokio as cw_tokio, Clock, Runner};
+use commonware_runtime::{tokio as cw_tokio, Runner};
 use futures_util::StreamExt;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
+
+/// Maximum pending transactions to prevent OOM
+const MAX_PENDING_TXS: usize = 100_000;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Development executor for local testing")]
@@ -56,124 +59,144 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(url = %args.url, "Starting dev executor");
 
     // Create client
-    let client = Client::new(&args.url, identity);
+    let client = Client::new(&args.url, identity)?;
     let ws_url = format!("{}/mempool", args.url.replace("http://", "ws://"));
     let block_interval_ms = args.block_interval_ms;
 
-    // Run executor using commonware runtime
-    let executor = cw_tokio::Runner::default();
+    // Run executor using commonware runtime with panic catching
+    let cfg = cw_tokio::Config::default()
+        .with_catch_panics(true);
+    let executor = cw_tokio::Runner::new(cfg);
     executor.start(|context| async move {
-        // Create state and events databases
+        // Create state and events databases (persistent across reconnections)
         let (mut state, mut events) = create_adbs(&context).await;
         let mut pending_txs: Vec<Transaction> = Vec::new();
         let mut view: u64 = 1;
-
-        // Connect to mempool using tokio-tungstenite directly
-        info!(url = %ws_url, "Connecting to mempool...");
-        let (ws_stream, _) = match tokio_tungstenite::connect_async(&ws_url).await {
-            Ok(result) => result,
-            Err(e) => {
-                warn!(?e, "Failed to connect to mempool");
-                return;
-            }
-        };
-        info!("WebSocket connected");
-
-        let (_, mut read) = ws_stream.split();
         let block_interval = Duration::from_millis(block_interval_ms);
         let mut last_block_time = std::time::Instant::now();
 
+        // Outer reconnection loop
         loop {
-            // Use tokio::select! with timeout to ensure periodic block execution
-            tokio::select! {
-                biased;
+            // Connect to mempool using tokio-tungstenite directly
+            info!(url = %ws_url, "Connecting to mempool...");
+            let ws_stream = match tokio_tungstenite::connect_async(&ws_url).await {
+                Ok((stream, _)) => stream,
+                Err(e) => {
+                    warn!(?e, "Failed to connect to mempool, retrying in 2 seconds...");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            info!("WebSocket connected");
 
-                // Short timeout to ensure we don't block forever
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            let (_, mut read) = ws_stream.split();
 
-                // Process WebSocket messages
-                msg = read.next() => {
-                    match msg {
-                        Some(Ok(Message::Binary(data))) => {
-                            info!(len = data.len(), "Received binary message from mempool");
-                            match api::Pending::decode(&mut data.as_slice()) {
-                                Ok(pending) => {
-                                    let tx_count = pending.transactions.len();
-                                    if tx_count > 0 {
-                                        info!(count = tx_count, total_pending = pending_txs.len() + tx_count, "Adding transactions to pending queue");
-                                        pending_txs.extend(pending.transactions);
+            // Inner message processing loop
+            loop {
+                // Use tokio::select! with timeout to ensure periodic block execution
+                tokio::select! {
+                    biased;
+
+                    // Short timeout to ensure we don't block forever
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+
+                    // Process WebSocket messages
+                    msg = read.next() => {
+                        match msg {
+                            Some(Ok(Message::Binary(data))) => {
+                                match api::Pending::decode(&mut data.as_slice()) {
+                                    Ok(pending) => {
+                                        let tx_count = pending.transactions.len();
+                                        if tx_count > 0 {
+                                            // Prevent OOM by limiting pending transactions
+                                            if pending_txs.len() + tx_count > MAX_PENDING_TXS {
+                                                warn!(
+                                                    current = pending_txs.len(),
+                                                    incoming = tx_count,
+                                                    max = MAX_PENDING_TXS,
+                                                    "Dropping transactions - pending queue full"
+                                                );
+                                            } else {
+                                                info!(count = tx_count, total_pending = pending_txs.len() + tx_count, "Adding transactions to pending queue");
+                                                pending_txs.extend(pending.transactions);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(?e, "Failed to decode Pending");
                                     }
                                 }
-                                Err(e) => {
-                                    warn!(?e, "Failed to decode Pending");
-                                }
+                            }
+                            Some(Ok(Message::Text(text))) => {
+                                info!(text = %text, "Received text message from mempool");
+                            }
+                            Some(Ok(Message::Ping(_))) => {}
+                            Some(Ok(Message::Pong(_))) => {}
+                            Some(Ok(Message::Close(frame))) => {
+                                warn!(?frame, "Mempool WebSocket closed, reconnecting...");
+                                break;
+                            }
+                            Some(Ok(Message::Frame(_))) => {}
+                            Some(Err(e)) => {
+                                warn!(?e, "Mempool WebSocket error, reconnecting...");
+                                break;
+                            }
+                            None => {
+                                warn!("Mempool WebSocket stream ended, reconnecting...");
+                                break;
                             }
                         }
-                        Some(Ok(Message::Text(text))) => {
-                            info!(text = %text, "Received text message from mempool");
+                    }
+                }
+
+                // Check if it's time to execute a block (regardless of WebSocket messages)
+                let elapsed = last_block_time.elapsed();
+                if elapsed >= block_interval {
+                    if pending_txs.is_empty() {
+                        // Reset timer even if no transactions to avoid log spam
+                        last_block_time = std::time::Instant::now();
+                    } else {
+                        let txs = std::mem::take(&mut pending_txs);
+                        info!(count = txs.len(), view, elapsed_ms = elapsed.as_millis(), "Executing block");
+
+                        // Execute block
+                        let (seed, summary) = execute_block(
+                            &network_secret,
+                            network_identity,
+                            &mut state,
+                            &mut events,
+                            view,
+                            txs,
+                        )
+                        .await;
+
+                        // Verify and get digests
+                        let Some((_state_digests, _events_digests)) = summary.verify(&network_identity) else {
+                            warn!("Summary verification failed");
+                            last_block_time = std::time::Instant::now();
+                            continue;
+                        };
+
+                        // Submit seed first
+                        if let Err(e) = client.submit_seed(seed).await {
+                            warn!(?e, "Failed to submit seed");
                         }
-                        Some(Ok(Message::Ping(_))) => {}
-                        Some(Ok(Message::Pong(_))) => {}
-                        Some(Ok(Message::Close(frame))) => {
-                            warn!(?frame, "Mempool WebSocket closed");
-                            break;
+
+                        // Submit summary
+                        if let Err(e) = client.submit_summary(summary).await {
+                            warn!(?e, "Failed to submit summary");
                         }
-                        Some(Ok(Message::Frame(_))) => {}
-                        Some(Err(e)) => {
-                            warn!(?e, "Mempool WebSocket error");
-                            break;
-                        }
-                        None => {
-                            warn!("Mempool WebSocket stream ended");
-                            break;
-                        }
+
+                        info!(view, "Block executed and submitted");
+                        view += 1;
+                        last_block_time = std::time::Instant::now();
                     }
                 }
             }
 
-            // Check if it's time to execute a block (regardless of WebSocket messages)
-            let elapsed = last_block_time.elapsed();
-            if elapsed >= block_interval {
-                if pending_txs.is_empty() {
-                    // Reset timer even if no transactions to avoid log spam
-                    last_block_time = std::time::Instant::now();
-                } else {
-                    let txs = std::mem::take(&mut pending_txs);
-                    info!(count = txs.len(), view, elapsed_ms = elapsed.as_millis(), "Executing block");
-
-                // Execute block
-                let (seed, summary) = execute_block(
-                    &network_secret,
-                    network_identity,
-                    &mut state,
-                    &mut events,
-                    view,
-                    txs,
-                )
-                .await;
-
-                // Verify and get digests
-                let Some((_state_digests, _events_digests)) = summary.verify(&network_identity) else {
-                    warn!("Summary verification failed");
-                    last_block_time = std::time::Instant::now();
-                    continue;
-                };
-
-                // Submit seed first
-                if let Err(e) = client.submit_seed(seed).await {
-                    warn!(?e, "Failed to submit seed");
-                }
-
-                // Submit summary
-                if let Err(e) = client.submit_summary(summary).await {
-                    warn!(?e, "Failed to submit summary");
-                }
-
-                info!(view, "Block executed and submitted");
-                view += 1;
-                last_block_time = std::time::Instant::now();
-                }
-            }
+            // Brief delay before reconnecting
+            info!("Reconnecting in 1 second...");
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
 

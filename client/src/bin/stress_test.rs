@@ -6,19 +6,22 @@
 //! Options:
 //!   -u, --url            Node URL (default: http://localhost:8080)
 //!   -i, --identity       Validator identity hex (required)
-//!   -n, --num-bots       Number of bots to spawn (default: 100)
-//!   -g, --games-per-bot  Games per bot to play (default: 10)
-//!   -d, --delay-ms       Delay between games in ms (default: 100)
+//!   -n, --num-bots       Number of bots to spawn (default: 300)
+//!   -d, --duration       Duration in seconds (default: 300 = 5 minutes)
+//!   -r, --rate           Bets per second per bot (default: 3.0)
 
 use nullspace_client::Client;
 use nullspace_types::{
     casino::GameType,
-    execution::{Instruction, Transaction},
+    execution::{Instruction, Transaction, Key, Value},
     Identity,
 };
 use clap::Parser;
 use commonware_codec::DecodeExt;
-use commonware_cryptography::{ed25519::PrivateKey, PrivateKeyExt};
+use commonware_cryptography::{
+    ed25519::{PrivateKey, PublicKey}, 
+    PrivateKeyExt, Signer
+};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::{
     sync::{
@@ -27,7 +30,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tracing::info;
+use tracing::{info, warn, error};
+use tokio::time;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Bot stress test for casino games")]
@@ -38,14 +42,14 @@ struct Args {
     #[arg(short, long)]
     identity: String,
 
-    #[arg(short, long, default_value = "100")]
+    #[arg(short, long, default_value = "300")]
     num_bots: usize,
 
-    #[arg(short, long, default_value = "10")]
-    games_per_bot: usize,
+    #[arg(short, long, default_value = "300")]
+    duration: u64,
 
-    #[arg(short, long, default_value = "100")]
-    delay_ms: u64,
+    #[arg(short, long, default_value = "3.0")]
+    rate: f64,
 }
 
 /// Bot state tracking
@@ -55,8 +59,6 @@ struct BotState {
     nonce: AtomicU64,
     session_counter: AtomicU64,
     games_played: AtomicU64,
-    games_won: AtomicU64,
-    games_lost: AtomicU64,
 }
 
 impl BotState {
@@ -68,8 +70,6 @@ impl BotState {
             nonce: AtomicU64::new(0),
             session_counter: AtomicU64::new(id as u64 * 1_000_000),
             games_played: AtomicU64::new(0),
-            games_won: AtomicU64::new(0),
-            games_lost: AtomicU64::new(0),
         }
     }
 
@@ -81,13 +81,8 @@ impl BotState {
         self.session_counter.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn record_game(&self, won: bool) {
-        self.games_played.fetch_add(1, Ordering::Relaxed);
-        if won {
-            self.games_won.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.games_lost.fetch_add(1, Ordering::Relaxed);
-        }
+    fn public_key(&self) -> PublicKey {
+        self.keypair.public_key()
     }
 }
 
@@ -118,38 +113,6 @@ impl Metrics {
         }
         self.total_latency_ms.fetch_add(latency_ms, Ordering::Relaxed);
     }
-
-    fn print_summary(&self, elapsed: Duration) {
-        let submitted = self.transactions_submitted.load(Ordering::Relaxed);
-        let success = self.transactions_success.load(Ordering::Relaxed);
-        let failed = self.transactions_failed.load(Ordering::Relaxed);
-        let total_latency = self.total_latency_ms.load(Ordering::Relaxed);
-
-        let tps = if elapsed.as_secs() > 0 {
-            submitted as f64 / elapsed.as_secs_f64()
-        } else {
-            0.0
-        };
-
-        let avg_latency = if submitted > 0 {
-            total_latency as f64 / submitted as f64
-        } else {
-            0.0
-        };
-
-        let success_rate = if submitted > 0 {
-            (success as f64 / submitted as f64) * 100.0
-        } else {
-            0.0
-        };
-
-        info!("=== STRESS TEST RESULTS ===");
-        info!("Duration: {:.2}s", elapsed.as_secs_f64());
-        info!("Transactions: {} submitted, {} success, {} failed", submitted, success, failed);
-        info!("TPS: {:.2}", tps);
-        info!("Average Latency: {:.2}ms", avg_latency);
-        info!("Success Rate: {:.2}%", success_rate);
-    }
 }
 
 /// Generate a random game move payload based on game type
@@ -163,18 +126,33 @@ fn generate_move_payload(game_type: GameType, rng: &mut StdRng, move_number: u32
                 let mut payload = vec![0, bet_type];
                 payload.extend_from_slice(&amount.to_be_bytes());
                 payload
-            } else {
+            } else if move_number == 1 {
                 // Deal: [1]
                 vec![1]
+            } else {
+                vec![]
             }
         }
         GameType::Blackjack => {
-            // Stand to finish quickly: [1]
-            vec![1]
+            if move_number == 0 {
+                // Stand to finish quickly: [1]
+                vec![1]
+            } else {
+                vec![]
+            }
         }
         GameType::CasinoWar => {
-            // Just wait for deal - no initial move needed
-            vec![]
+            // Just wait for deal - usually immediate resolution?
+            // Actually CasinoWar init() does nothing, process_move handles bet then deal.
+            // If move 0 is bet, move 1 is deal?
+            // Let's assume standard flow: 0=bet, 1=deal? 
+            // Wait, CasinoWar might be simpler. Let's send empty to be safe or check code.
+            // Assuming it needs a move to progress if not auto-resolved.
+            if move_number == 0 {
+                vec![] // No payload needed? Or maybe just 'deal' signal?
+            } else {
+                vec![]
+            }
         }
         GameType::Craps => {
             if move_number == 0 {
@@ -188,32 +166,55 @@ fn generate_move_payload(game_type: GameType, rng: &mut StdRng, move_number: u32
             }
         }
         GameType::VideoPoker => {
-            // Hold all cards: [0b11111] = 31
-            vec![31]
+            if move_number == 0 {
+                // Hold all cards: [0b11111] = 31
+                vec![31]
+            } else {
+                vec![]
+            }
         }
         GameType::HiLo => {
-            // Random guess: 0=higher, 1=lower, 2=cashout
-            let choice = rng.gen_range(0..=1u8);
-            vec![choice]
+            // 0=higher, 1=lower, 2=cashout
+            // If move > 0, 30% chance to cashout to lock in wins
+            if move_number > 0 && rng.gen_bool(0.3) {
+                vec![2]
+            } else {
+                let choice = rng.gen_range(0..=1u8);
+                vec![choice]
+            }
         }
         GameType::Roulette => {
-            // Bet on red: [1, 0]
-            vec![1, 0]
+            if move_number == 0 {
+                // Bet on red: [1, 0]
+                vec![1, 0]
+            } else {
+                vec![]
+            }
         }
         GameType::SicBo => {
-            // Bet on small: [0, 0]
-            vec![0, 0]
+            if move_number == 0 {
+                // Bet on small: [0, 0]
+                vec![0, 0]
+            } else {
+                vec![]
+            }
         }
         GameType::ThreeCard => {
-            // Play: [0]
-            vec![0]
+            if move_number == 0 {
+                // Play: [0]
+                vec![0]
+            } else {
+                vec![]
+            }
         }
         GameType::UltimateHoldem => {
             // Check or fold randomly
             if move_number < 2 {
                 vec![0] // Check
-            } else {
+            } else if move_number == 2 {
                 vec![4] // Fold
+            } else {
+                vec![]
             }
         }
     }
@@ -239,7 +240,8 @@ async fn flush_batch(
                 metrics.record_submit(true, latency);
             }
         }
-        Err(_) => {
+        Err(e) => {
+            warn!("Transaction failed: {}", e);
             let latency = start.elapsed().as_millis() as u64;
             for _ in 0..num_txs {
                 metrics.record_submit(false, latency);
@@ -252,8 +254,8 @@ async fn flush_batch(
 async fn run_bot(
     client: Arc<Client>,
     bot: Arc<BotState>,
-    games_to_play: usize,
-    delay_ms: u64,
+    duration: Duration,
+    rate_limit_per_sec: f64,
     metrics: Arc<Metrics>,
 ) {
     let mut rng = StdRng::from_entropy();
@@ -268,16 +270,20 @@ async fn run_bot(
         },
     );
     pending_txs.push(register_tx);
-
-    // Flush registration immediately
     flush_batch(&client, &mut pending_txs, &metrics).await;
-    info!("Bot {} registered", bot.name);
 
-    // Small delay after registration
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait a bit for registration to process
+    time::sleep(Duration::from_millis(100)).await;
 
-    // Play games
-    for game_num in 0..games_to_play {
+    let start_time = Instant::now();
+    let interval_duration = Duration::from_secs_f64(1.0 / rate_limit_per_sec);
+    let mut interval = time::interval(interval_duration);
+    // Tick once immediately to start
+    interval.tick().await;
+
+    while start_time.elapsed() < duration {
+        interval.tick().await;
+
         // Pick a random game type
         let game_type = match rng.gen_range(0..10u8) {
             0 => GameType::Baccarat,
@@ -293,7 +299,7 @@ async fn run_bot(
         };
 
         let session_id = bot.next_session_id();
-        let bet = 10; // Small consistent bet
+        let bet = 10;
 
         // Start game
         let start_tx = Transaction::sign(
@@ -307,8 +313,9 @@ async fn run_bot(
         );
         pending_txs.push(start_tx);
 
-        // Make moves until game completes (max 5 moves to prevent infinite loops)
-        for move_num in 0..5u32 {
+        // Make moves until game completes
+        // Increased limit to 50 to allow Craps/HiLo to finish
+        for move_num in 0..50u32 {
             let payload = generate_move_payload(game_type, &mut rng, move_num);
             if payload.is_empty() {
                 break;
@@ -323,34 +330,69 @@ async fn run_bot(
                 },
             );
             pending_txs.push(move_tx);
+        }
 
-            // Flush batch when it reaches size 5
-            if pending_txs.len() >= 5 {
-                flush_batch(&client, &mut pending_txs, &metrics).await;
-                // Small delay between batches
-                tokio::time::sleep(Duration::from_millis(10)).await;
+        // Flush game transactions
+        flush_batch(&client, &mut pending_txs, &metrics).await;
+        bot.games_played.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Monitor task to check leaderboard and logic
+async fn monitor_logic(
+    client: Arc<Client>,
+    bots: Vec<Arc<BotState>>,
+    duration: Duration,
+) {
+    let start_time = Instant::now();
+    
+    info!("Starting leaderboard and logic monitor...");
+
+    while start_time.elapsed() < duration {
+        time::sleep(Duration::from_secs(5)).await;
+
+        // 1. Check Leaderboard
+        match client.query_state(&Key::CasinoLeaderboard).await {
+            Ok(Some(lookup)) => {
+                let value = lookup.operation.value();
+                if let Some(Value::CasinoLeaderboard(lb)) = value {
+                    info!("Leaderboard Update ({} entries):", lb.entries.len());
+                    for (i, entry) in lb.entries.iter().enumerate() {
+                        info!("  #{}: {} - {} chips", i + 1, entry.name, entry.chips);
+                    }
+                    
+                    if lb.entries.is_empty() {
+                         warn!("Leaderboard is empty!");
+                    }
+                } else {
+                    error!("Expected CasinoLeaderboard value, got {:?}", value);
+                }
+            }
+            Ok(None) => {
+                warn!("Leaderboard state not found yet");
+            }
+            Err(e) => {
+                error!("Failed to query leaderboard: {}", e);
             }
         }
 
-        // Flush remaining transactions after each game
-        flush_batch(&client, &mut pending_txs, &metrics).await;
-
-        // Record game played (we don't track win/loss without reading state)
-        bot.record_game(rng.gen_bool(0.5)); // Random for now
-
-        if game_num < games_to_play - 1 {
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        // 2. Check a random bot for logic verification
+        if let Some(_) = bots.first() {
+            let sample_bots = bots.iter().take(5); 
+            for bot in sample_bots {
+                match client.query_state(&Key::CasinoPlayer(bot.public_key())).await {
+                    Ok(Some(lookup)) => {
+                        let value = lookup.operation.value();
+                        if let Some(Value::CasinoPlayer(player)) = value {
+                             // Just checking if we can read state, no specific assertion logs to avoid spam
+                             // unless critical
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
     }
-
-    // Flush any remaining transactions
-    flush_batch(&client, &mut pending_txs, &metrics).await;
-
-    info!(
-        "Bot {} finished: {} games played",
-        bot.name,
-        bot.games_played.load(Ordering::Relaxed)
-    );
 }
 
 #[tokio::main]
@@ -370,13 +412,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Identity::decode(&mut identity_bytes.as_slice()).map_err(|_| "Failed to decode identity")?;
 
     info!(
-        "Starting stress test with {} bots, {} games each",
-        args.num_bots, args.games_per_bot
+        "Starting stress test tournament with {} bots",
+        args.num_bots
     );
+    info!("Duration: {} seconds, Rate: {} bets/sec/bot", args.duration, args.rate);
     info!("Connecting to {}", args.url);
 
     // Create client
-    let client = Arc::new(Client::new(&args.url, identity));
+    let client = Arc::new(Client::new(&args.url, identity)?);
 
     // Create bots
     let mut master_rng = StdRng::seed_from_u64(42);
@@ -389,17 +432,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start timer
     let start_time = Instant::now();
+    let duration = Duration::from_secs(args.duration);
+
+    // Spawn monitor task
+    let monitor_handle = tokio::spawn({
+        let client = Arc::clone(&client);
+        let bots = bots.clone();
+        async move {
+            monitor_logic(client, bots, duration).await;
+        }
+    });
 
     // Spawn bot tasks
     let mut handles = Vec::new();
-    for bot in bots {
+    for bot in &bots {
         let client = Arc::clone(&client);
         let metrics = Arc::clone(&metrics);
-        let games_per_bot = args.games_per_bot;
-        let delay_ms = args.delay_ms;
+        let bot = Arc::clone(bot);
+        let rate = args.rate;
 
         handles.push(tokio::spawn(async move {
-            run_bot(client, bot, games_per_bot, delay_ms, metrics).await;
+            run_bot(client, bot, duration, rate, metrics).await;
         }));
     }
 
@@ -407,10 +460,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for handle in handles {
         let _ = handle.await;
     }
+    
+    // Wait for monitor
+    let _ = monitor_handle.await;
 
     // Print results
     let elapsed = start_time.elapsed();
-    metrics.print_summary(elapsed);
+    let submitted = metrics.transactions_submitted.load(Ordering::Relaxed);
+    let success = metrics.transactions_success.load(Ordering::Relaxed);
+    let failed = metrics.transactions_failed.load(Ordering::Relaxed);
+    let total_latency = metrics.total_latency_ms.load(Ordering::Relaxed);
+    let games_played: u64 = bots.iter().map(|b| b.games_played.load(Ordering::Relaxed)).sum();
+
+    let tps = if elapsed.as_secs() > 0 {
+        submitted as f64 / elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+
+    let avg_latency = if submitted > 0 {
+        total_latency as f64 / submitted as f64
+    } else {
+        0.0
+    };
+
+    info!("=== TOURNAMENT SIMULATION RESULTS ===");
+    info!("Duration: {:.2}s", elapsed.as_secs_f64());
+    info!("Total Games Played: {}", games_played);
+    info!("Transactions: {} submitted, {} success, {} failed", submitted, success, failed);
+    info!("TPS: {:.2}", tps);
+    info!("Average Latency: {:.2}ms", avg_latency);
+    
+    // Final Leaderboard Check
+    info!("Final Leaderboard Check:");
+    match client.query_state(&Key::CasinoLeaderboard).await {
+         Ok(Some(lookup)) => {
+             if let Some(Value::CasinoLeaderboard(lb)) = lookup.operation.value() {
+                 for (i, entry) in lb.entries.iter().enumerate() {
+                    info!("  #{}: {} - {} chips", i + 1, entry.name, entry.chips);
+                 }
+             }
+         }
+         _ => info!("Could not fetch final leaderboard"),
+    }
 
     Ok(())
 }

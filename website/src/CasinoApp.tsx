@@ -100,7 +100,7 @@ export default function CasinoApp() {
        />
 
        <div className="flex flex-1 overflow-hidden relative">
-          <main className="flex-1 flex flex-col relative bg-terminal-black p-4">
+          <main className={`flex-1 flex flex-col relative bg-terminal-black p-4 overflow-y-auto ${gameState.type !== GameType.NONE ? 'pb-20 md:pb-4' : ''}`}>
              <TournamentAlert tournamentTime={tournamentTime} />
              <ErrorBoundary>
                <ActiveGame

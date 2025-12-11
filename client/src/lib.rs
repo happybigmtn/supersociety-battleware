@@ -27,6 +27,8 @@ pub enum Error {
     Url(#[from] url::ParseError),
     #[error("dial timeout")]
     DialTimeout,
+    #[error("invalid URL scheme: {0} (expected http or https)")]
+    InvalidScheme(String),
 }
 
 /// Result type for client operations.
@@ -89,7 +91,7 @@ mod tests {
         }
 
         fn create_client(&self) -> Client {
-            Client::new(&self.base_url, self.network_identity)
+            Client::new(&self.base_url, self.network_identity).unwrap()
         }
 
         fn create_seed(&self, view: u64) -> Seed {
@@ -349,5 +351,26 @@ mod tests {
         // Query non-existent seed
         let result = client.query_seed(Query::Index(999)).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_client_invalid_scheme() {
+        let (_, network_identity) = create_network_keypair();
+
+        // Test invalid scheme
+        let result = Client::new("ftp://example.com", network_identity);
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert!(matches!(err, Error::InvalidScheme(_)));
+            assert_eq!(err.to_string(), "invalid URL scheme: ftp (expected http or https)");
+        }
+
+        // Test valid http scheme
+        let result = Client::new("http://localhost:8080", network_identity);
+        assert!(result.is_ok());
+
+        // Test valid https scheme
+        let result = Client::new("https://localhost:8080", network_identity);
+        assert!(result.is_ok());
     }
 }

@@ -313,7 +313,7 @@ impl CasinoGame for SicBo {
                 state.bets.push(SicBoBet { bet_type, number, amount });
                 session.state_blob = state.to_bytes();
                 session.move_count += 1;
-                Ok(GameResult::Continue)
+                Ok(GameResult::ContinueWithUpdate { payout: -(amount as i64) })
             }
 
             // Action 1: Roll dice and resolve all bets

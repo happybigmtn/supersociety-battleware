@@ -274,7 +274,10 @@ impl CasinoGame for UltimateHoldem {
         ];
 
         session.state_blob = serialize_state(Stage::Preflop, &player, &community, &dealer, 0);
-        GameResult::Continue
+        
+        // Deduct the Blind bet immediately (equal to Ante)
+        // Ante was deducted by CasinoStartGame, but Blind wasn't.
+        GameResult::ContinueWithUpdate { payout: -(session.bet as i64) }
     }
 
     fn process_move(

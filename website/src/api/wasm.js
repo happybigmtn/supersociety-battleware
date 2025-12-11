@@ -85,6 +85,11 @@ export class WasmWrapper {
     return this.wasm.encode_casino_leaderboard_key();
   }
 
+  // Encode casino tournament key
+  encodeCasinoTournamentKey(tournamentId) {
+    return this.wasm.encode_casino_tournament_key(BigInt(tournamentId));
+  }
+
   // Encode UpdatesFilter for all events
   encodeUpdatesFilterAll() {
     return this.wasm.encode_updates_filter_all();
@@ -285,6 +290,34 @@ export class WasmWrapper {
       this.keypair,
       BigInt(nonce),
       name
+    );
+    return tx.encode();
+  }
+
+  // Create a casino join tournament transaction
+  createCasinoJoinTournamentTransaction(nonce, tournamentId) {
+    if (!this.keypair) {
+      throw new Error('Keypair not initialized');
+    }
+    const tx = this.wasm.Transaction.casino_join_tournament(
+      this.keypair,
+      BigInt(nonce),
+      BigInt(tournamentId)
+    );
+    return tx.encode();
+  }
+
+  // Create a casino start tournament transaction
+  createCasinoStartTournamentTransaction(nonce, tournamentId, startTimeMs, endTimeMs) {
+    if (!this.keypair) {
+      throw new Error('Keypair not initialized');
+    }
+    const tx = this.wasm.Transaction.casino_start_tournament(
+      this.keypair,
+      BigInt(nonce),
+      BigInt(tournamentId),
+      BigInt(startTimeMs),
+      BigInt(endTimeMs)
     );
     return tx.encode();
   }

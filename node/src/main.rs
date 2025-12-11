@@ -258,7 +258,7 @@ fn main() {
         let p2p = network.start();
 
         // Create indexer
-        let indexer = Client::new(&config.indexer, identity);
+        let indexer = Client::new(&config.indexer, identity).expect("Failed to create indexer client");
 
         // Create engine
         let config = engine::Config {

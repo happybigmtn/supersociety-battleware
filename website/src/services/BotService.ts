@@ -146,24 +146,94 @@ export class BotService {
     wasm.createKeypair();
 
     const name = `Bot${String(id).padStart(4, '0')}`;
+    const publicKeyBytes = wasm.getPublicKeyBytes();
 
-    // Register the bot
+    // Fetch current account state from chain to get the actual nonce
+    let currentNonce = 0;
     try {
-      const registerTx = wasm.createCasinoRegisterTransaction(0, name);
-      await this.submitTransaction(wasm, registerTx);
+      const accountState = await this.getAccountState(publicKeyBytes);
+      if (accountState) {
+        currentNonce = accountState.nonce;
+        console.debug(`[BotService] Bot ${name} loaded nonce from chain: ${currentNonce}`);
+      }
     } catch (e) {
-      // May already be registered from previous run
-      console.debug(`[BotService] Bot ${name} registration:`, e);
+      console.debug(`[BotService] Bot ${name} failed to fetch account state:`, e);
+    }
+
+    // Register the bot if not already registered
+    if (currentNonce === 0) {
+      try {
+        const registerTx = wasm.createCasinoRegisterTransaction(0, name);
+        await this.submitTransaction(wasm, registerTx);
+        currentNonce = 1; // After registration, nonce is 1
+        console.debug(`[BotService] Bot ${name} registered, nonce is now 1`);
+      } catch (e) {
+        // May already be registered from previous run
+        console.debug(`[BotService] Bot ${name} registration:`, e);
+        // If registration failed, query the nonce again
+        try {
+          const accountState = await this.getAccountState(publicKeyBytes);
+          if (accountState) {
+            currentNonce = accountState.nonce;
+          }
+        } catch (queryError) {
+          console.warn(`[BotService] Bot ${name} failed to query nonce after registration error`);
+        }
+      }
     }
 
     return {
       id,
       name,
       wasm,
-      nonce: 1, // Start at 1 since we used 0 for registration
+      nonce: currentNonce,
       sessionCounter: id * 1_000_000,
       isActive: true,
     };
+  }
+
+  private async getAccountState(publicKeyBytes: Uint8Array): Promise<{ nonce: number } | null> {
+    try {
+      // Create a temporary WasmWrapper to use encoding functions
+      const tempWasm = new WasmWrapper(this.identityHex);
+      await tempWasm.init();
+
+      // Encode the account key
+      const keyBytes = tempWasm.encodeAccountKey(publicKeyBytes);
+      const hashedKey = tempWasm.hashKey(keyBytes);
+      const hexKey = tempWasm.bytesToHex(hashedKey);
+
+      // Query the state
+      const response = await fetch(`${this.baseUrl}/state/${hexKey}`);
+
+      if (response.status === 404) {
+        return null;
+      }
+
+      if (response.status !== 200) {
+        throw new Error(`State query returned ${response.status}`);
+      }
+
+      // Get binary response
+      const buffer = await response.arrayBuffer();
+      const valueBytes = new Uint8Array(buffer);
+
+      if (valueBytes.length === 0) {
+        return null;
+      }
+
+      // Decode value using WASM
+      const value = tempWasm.decodeLookup(valueBytes);
+
+      if (value && value.type === 'Account') {
+        return { nonce: value.nonce };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('[BotService] Failed to get account state:', error);
+      return null;
+    }
   }
 
   private async submitTransaction(wasm: WasmWrapper, txBytes: Uint8Array): Promise<void> {
@@ -215,14 +285,24 @@ export class BotService {
     const sessionId = BigInt(++bot.sessionCounter);
     const bet = 10; // Small consistent bet
 
-    // Start game
+    // Start game - use current nonce, only increment on success
+    const startNonce = bot.nonce;
     const startTx = bot.wasm.createCasinoStartGameTransaction(
-      bot.nonce++,
+      startNonce,
       gameType,
       bet,
       sessionId
     );
-    await this.submitTransaction(bot.wasm, startTx);
+
+    try {
+      await this.submitTransaction(bot.wasm, startTx);
+      bot.nonce++; // Only increment after successful submission
+    } catch (e) {
+      console.debug(`[BotService] Bot ${bot.name} start game failed, re-syncing nonce`);
+      // Try to re-sync nonce from chain on failure
+      await this.resyncNonce(bot);
+      return; // Exit early, next iteration will try again
+    }
 
     // Small delay
     await new Promise(r => setTimeout(r, 20));
@@ -230,18 +310,33 @@ export class BotService {
     // Make moves based on game type
     const moves = this.getGameMoves(gameType);
     for (const move of moves) {
+      const moveNonce = bot.nonce;
+      const moveTx = bot.wasm.createCasinoGameMoveTransaction(
+        moveNonce,
+        sessionId,
+        move
+      );
       try {
-        const moveTx = bot.wasm.createCasinoGameMoveTransaction(
-          bot.nonce++,
-          sessionId,
-          move
-        );
         await this.submitTransaction(bot.wasm, moveTx);
+        bot.nonce++; // Only increment after successful submission
         await new Promise(r => setTimeout(r, 10));
       } catch {
-        // Game may have ended
+        // Game may have ended or nonce issue - re-sync and exit
+        await this.resyncNonce(bot);
         break;
       }
+    }
+  }
+
+  private async resyncNonce(bot: BotState): Promise<void> {
+    try {
+      const accountState = await this.getAccountState(bot.wasm.getPublicKeyBytes());
+      if (accountState) {
+        bot.nonce = accountState.nonce;
+        console.debug(`[BotService] Bot ${bot.name} nonce re-synced to ${bot.nonce}`);
+      }
+    } catch (e) {
+      console.debug(`[BotService] Bot ${bot.name} failed to re-sync nonce:`, e);
     }
   }
 

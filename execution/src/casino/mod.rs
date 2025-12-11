@@ -178,6 +178,11 @@ pub enum GameResult {
     /// Used when games like Blackjack double-down or Casino War go-to-war increase
     /// the bet mid-game and then the player loses.
     LossWithExtraDeduction(u64),
+    /// Game completed with a loss where chips were already deducted via ContinueWithUpdate.
+    /// The value is the total loss amount to report (no additional chip deduction needed).
+    /// Used for table games like Baccarat, Craps, Roulette, Sic Bo where bets are placed
+    /// incrementally via ContinueWithUpdate before the final resolution.
+    LossPreDeducted(u64),
     /// Game completed with a push (tie, bet returned).
     Push,
 }

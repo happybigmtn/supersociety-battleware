@@ -63,6 +63,10 @@ body {
   background-color: #111111;
 }
 
+.bg-terminal-green {
+  background-color: #00ff41;
+}
+
 .text-terminal-green {
   color: #00ff41;
 }

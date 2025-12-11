@@ -55,6 +55,20 @@ pub const FAUCET_RATE_LIMIT: u64 = 100;
 /// Initial chips granted on registration
 pub const INITIAL_CHIPS: u64 = 1_000;
 
+/// Error codes for CasinoError events
+pub const ERROR_PLAYER_ALREADY_REGISTERED: u8 = 1;
+pub const ERROR_PLAYER_NOT_FOUND: u8 = 2;
+pub const ERROR_INSUFFICIENT_FUNDS: u8 = 3;
+pub const ERROR_INVALID_BET: u8 = 4;
+pub const ERROR_SESSION_EXISTS: u8 = 5;
+pub const ERROR_SESSION_NOT_FOUND: u8 = 6;
+pub const ERROR_SESSION_NOT_OWNED: u8 = 7;
+pub const ERROR_SESSION_COMPLETE: u8 = 8;
+pub const ERROR_INVALID_MOVE: u8 = 9;
+pub const ERROR_RATE_LIMITED: u8 = 10;
+pub const ERROR_TOURNAMENT_NOT_REGISTERING: u8 = 11;
+pub const ERROR_ALREADY_IN_TOURNAMENT: u8 = 12;
+
 /// Casino game types matching frontend GameType enum
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -443,6 +457,8 @@ impl CasinoLeaderboard {
         }
 
         // Find insertion point using binary search (entries sorted descending by chips)
+        // FIXED: Use chips.cmp(&e.chips) for descending order (higher chips first)
+        // This reverses the comparison so higher values come before lower values
         let insert_pos = self.entries
             .binary_search_by(|e| chips.cmp(&e.chips))
             .unwrap_or_else(|pos| pos);
@@ -475,7 +491,8 @@ impl Read for CasinoLeaderboard {
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
         Ok(Self {
             // Read up to 10 entries (matches truncate(10) in update())
-            entries: Vec::<LeaderboardEntry>::read_range(reader, 0..10)?,
+            // FIXED: Use inclusive range 0..=10 to allow exactly 10 entries
+            entries: Vec::<LeaderboardEntry>::read_range(reader, 0..=10)?,
         })
     }
 }
@@ -519,14 +536,21 @@ impl FixedSize for TournamentPhase {
     const SIZE: usize = 1;
 }
 
+/// Tournament duration in seconds (5 minutes)
+pub const TOURNAMENT_DURATION_SECS: u64 = 5 * 60;
+
 /// Tournament state
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Tournament {
     pub id: u64,
     pub phase: TournamentPhase,
     pub start_block: u64,
+    /// Unix timestamp (milliseconds) when the tournament started
+    pub start_time_ms: u64,
+    /// Unix timestamp (milliseconds) when the tournament ends
+    pub end_time_ms: u64,
     pub players: Vec<PublicKey>,
-    pub starting_chips: u64,   // 10000
+    pub starting_chips: u64,   // 1000
     pub starting_shields: u32, // 3
     pub starting_doubles: u32, // 3
 }
@@ -536,6 +560,8 @@ impl Write for Tournament {
         self.id.write(writer);
         self.phase.write(writer);
         self.start_block.write(writer);
+        self.start_time_ms.write(writer);
+        self.end_time_ms.write(writer);
         self.players.write(writer);
         self.starting_chips.write(writer);
         self.starting_shields.write(writer);
@@ -551,6 +577,8 @@ impl Read for Tournament {
             id: u64::read(reader)?,
             phase: TournamentPhase::read(reader)?,
             start_block: u64::read(reader)?,
+            start_time_ms: u64::read(reader)?,
+            end_time_ms: u64::read(reader)?,
             players: Vec::<PublicKey>::read_range(reader, 0..=1000)?,
             starting_chips: u64::read(reader)?,
             starting_shields: u32::read(reader)?,
@@ -564,6 +592,8 @@ impl EncodeSize for Tournament {
         self.id.encode_size()
             + self.phase.encode_size()
             + self.start_block.encode_size()
+            + self.start_time_ms.encode_size()
+            + self.end_time_ms.encode_size()
             + self.players.encode_size()
             + self.starting_chips.encode_size()
             + self.starting_shields.encode_size()

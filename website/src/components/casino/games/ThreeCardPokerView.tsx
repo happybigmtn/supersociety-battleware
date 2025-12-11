@@ -43,13 +43,13 @@ export const ThreeCardPokerView = React.memo<ThreeCardPokerViewProps>(({ gameSta
     );
 
     const dealerRank = useMemo(() =>
-        gameState.dealerCards.length === 3 && !gameState.dealerCards.some(c => c.isHidden)
+        gameState.dealerCards.length === 3 && !gameState.dealerCards.some(c => c && c.isHidden)
             ? getHandRankName(gameState.dealerCards) : '',
         [gameState.dealerCards]
     );
 
     const dealerQualifies = useMemo(() =>
-        gameState.dealerCards.every(c => !c.isHidden) &&
+        gameState.dealerCards.every(c => c && !c.isHidden) &&
         getVisibleHandValue(gameState.dealerCards.slice(0, 1)) >= 10,
         [gameState.dealerCards]
     );
@@ -71,7 +71,7 @@ export const ThreeCardPokerView = React.memo<ThreeCardPokerViewProps>(({ gameSta
                             />
                             {dealerRank && (
                                 <span className="text-xs text-gray-500 mt-1">
-                                    {gameState.dealerCards.every(c => !c.isHidden) ?
+                                    {gameState.dealerCards.every(c => c && !c.isHidden) ?
                                         (dealerQualifies ? 'QUALIFIES' : 'DOES NOT QUALIFY') : ''}
                                 </span>
                             )}
@@ -90,7 +90,7 @@ export const ThreeCardPokerView = React.memo<ThreeCardPokerViewProps>(({ gameSta
 
                 {/* Center Info */}
                 <div className="text-center space-y-3 relative z-20">
-                    <div className="text-2xl font-bold text-white tracking-widest animate-pulse">
+                    <div className="text-2xl font-bold text-terminal-gold tracking-widest animate-pulse">
                         {gameState.message}
                     </div>
                     <div className="text-sm text-gray-500 flex flex-col items-center gap-1">

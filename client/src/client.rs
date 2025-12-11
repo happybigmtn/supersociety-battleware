@@ -30,35 +30,35 @@ pub struct Client {
 impl Client {
     /// Create a new client
     #[allow(clippy::result_large_err)]
-    pub fn new(base_url: &str, identity: Identity) -> Self {
-        let base_url = Url::parse(base_url).unwrap();
+    pub fn new(base_url: &str, identity: Identity) -> Result<Self> {
+        let base_url = Url::parse(base_url)?;
 
         // Convert http(s) to ws(s) for WebSocket URL
         let ws_scheme = match base_url.scheme() {
             "http" => "ws",
             "https" => "wss",
             scheme => {
-                panic!("Invalid scheme: {scheme}");
+                return Err(Error::InvalidScheme(scheme.to_string()));
             }
         };
 
         let mut ws_url = base_url.clone();
-        ws_url.set_scheme(ws_scheme).unwrap();
+        ws_url.set_scheme(ws_scheme)
+            .map_err(|_| Error::InvalidScheme(ws_scheme.to_string()))?;
 
         let http_client = HttpClient::builder()
             .timeout(TIMEOUT)
             .pool_max_idle_per_host(100)  // More connections per host
             .pool_idle_timeout(Duration::from_secs(60))  // Keep connections alive
             .tcp_keepalive(Duration::from_secs(30))  // TCP keepalive
-            .build()
-            .unwrap();
+            .build()?;
 
-        Self {
+        Ok(Self {
             base_url,
             ws_url,
             http_client,
             identity,
-        }
+        })
     }
 
     /// Submit a transaction

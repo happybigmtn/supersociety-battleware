@@ -92,7 +92,11 @@ export const createDeck = (): Card[] => {
       deck.push({ suit, rank, value });
     });
   });
-  return deck.sort(() => Math.random() - 0.5);
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
 };
 
 export const rollDie = () => Math.floor(Math.random() * 6) + 1;
@@ -470,7 +474,8 @@ export const evaluateThreeCardHand = (cards: Card[]): { score: number, rank: str
 
 
 export const getVisibleHandValue = (cards: Card[]) => {
-    return getHandValue(cards.filter(c => !c.isHidden));
+    if (!cards || !Array.isArray(cards)) return 0;
+    return getHandValue(cards.filter(c => c && !c.isHidden));
 };
 
 export const formatTime = (seconds: number) => {
@@ -786,24 +791,29 @@ export const resolveCrapsBets = (total: number, point: number | null, bets: Crap
 };
 
 // Returns total items for Sic Bo exposure (totals 3-18)
+// Includes both triple and non-triple variants for totals that can be rolled as triples (6, 9, 12, 15)
 export const getSicBoTotalItems = (): { total: number; isTriple: boolean; label: string }[] => {
     return [
-        { total: 3, isTriple: true, label: '3' },
+        { total: 3, isTriple: true, label: '3' },      // Only possible as 1-1-1
         { total: 4, isTriple: false, label: '4' },
         { total: 5, isTriple: false, label: '5' },
+        { total: 6, isTriple: true, label: '6T' },     // 2-2-2 triple
         { total: 6, isTriple: false, label: '6' },
         { total: 7, isTriple: false, label: '7' },
         { total: 8, isTriple: false, label: '8' },
+        { total: 9, isTriple: true, label: '9T' },     // 3-3-3 triple
         { total: 9, isTriple: false, label: '9' },
         { total: 10, isTriple: false, label: '10' },
         { total: 11, isTriple: false, label: '11' },
+        { total: 12, isTriple: true, label: '12T' },   // 4-4-4 triple
         { total: 12, isTriple: false, label: '12' },
         { total: 13, isTriple: false, label: '13' },
         { total: 14, isTriple: false, label: '14' },
+        { total: 15, isTriple: true, label: '15T' },   // 5-5-5 triple
         { total: 15, isTriple: false, label: '15' },
         { total: 16, isTriple: false, label: '16' },
         { total: 17, isTriple: false, label: '17' },
-        { total: 18, isTriple: true, label: '18' },
+        { total: 18, isTriple: true, label: '18' },    // Only possible as 6-6-6
     ];
 }
 
@@ -876,10 +886,14 @@ const sicBoTotalPayout = (total: number): number => {
 
 // Calculate exposure for a specific total (for Small/Big/Sum bets)
 // isTriple indicates if the total was rolled as a triple (e.g., 3-3-3 for 9)
+// Only counts SMALL, BIG, and SUM bets - other bet types don't apply to total outcomes
 export const calculateSicBoTotalExposure = (total: number, isTriple: boolean, bets: SicBoBet[]) => {
     let pnl = 0;
 
-    bets.forEach(b => {
+    // Filter to only bets that apply to total outcomes
+    const totalBets = bets.filter(b => b.type === 'SMALL' || b.type === 'BIG' || b.type === 'SUM');
+
+    totalBets.forEach(b => {
         let win = 0;
         // Small: sum 4-10, non-triple (1:1)
         if (b.type === 'SMALL') {
@@ -914,7 +928,15 @@ export const calculateSicBoCombinationExposure = (
 ) => {
     let pnl = 0;
 
-    bets.forEach(b => {
+    // Filter to only bets that apply to combination outcomes
+    const comboBets = bets.filter(b =>
+        b.type === 'SINGLE_DIE' ||
+        b.type === 'DOUBLE_SPECIFIC' ||
+        b.type === 'TRIPLE_SPECIFIC' ||
+        b.type === 'TRIPLE_ANY'
+    );
+
+    comboBets.forEach(b => {
         let win = 0;
 
         // SINGLE (1 match = 1:1)
@@ -1002,8 +1024,8 @@ export const calculateHiLoProjection = (cards: Card[], deck: Card[], currentPot:
     
     deck.forEach(c => {
         const r = getHiLoRank(c);
-        if (r >= current) highWins++;
-        if (r <= current) lowWins++;
+        if (r > current) highWins++;
+        if (r < current) lowWins++;
     });
     
     // Odds = Total / Wins

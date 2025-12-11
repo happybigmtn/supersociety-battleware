@@ -50,6 +50,7 @@ export interface CrapsBet {
   target?: number; // The number (e.g., 4 for a Place 4, or the Point for a Come bet)
   oddsAmount?: number; // Attached odds amount
   status?: 'PENDING' | 'ON'; // PENDING means Come bet waiting to travel
+  local?: boolean; // true = locally staged bet not yet sent to chain, undefined/false = on-chain bet
 }
 
 export interface BaccaratBet {
@@ -85,6 +86,7 @@ export interface GameState {
   crapsUndoStack: CrapsBet[][]; // History of bet arrays for current turn
   crapsInputMode: 'NONE' | 'YES' | 'NO' | 'NEXT' | 'HARDWAY'; // Replaces string buffer
   crapsRollHistory: number[];
+  crapsLastRoundBets: CrapsBet[]; // Bets from the previous roll (for rebet)
   
   // Roulette
   rouletteBets: RouletteBet[];

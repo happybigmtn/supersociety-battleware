@@ -74,7 +74,7 @@ export const RouletteView = React.memo<{ gameState: GameState; numberInput?: str
 
                 {/* Center Info */}
                 <div className="text-center space-y-3 relative z-20">
-                    <div className="text-2xl font-bold text-white tracking-widest animate-pulse">
+                    <div className="text-2xl font-bold text-terminal-gold tracking-widest animate-pulse">
                         {gameState.message}
                     </div>
                 </div>

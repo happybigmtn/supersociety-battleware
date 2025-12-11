@@ -54,7 +54,7 @@ export const Header: React.FC<HeaderProps> = ({ phase, tournamentTime, stats, la
             </div>
             <div className="flex items-center gap-1 sm:gap-2">
                 <span className="text-gray-500 hidden sm:inline">CHIPS</span>
-                <span className="text-terminal-gold font-bold text-sm sm:text-lg">${stats.chips.toLocaleString()}</span>
+                <span className="text-white font-bold text-sm sm:text-lg">${stats.chips.toLocaleString()}</span>
             </div>
     </div>
     </header>
@@ -162,10 +162,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ leaderboard, history, viewMode
             
             {/* Logs Area */}
             <div className="flex-none h-48 border-t-2 border-gray-700 p-4 bg-terminal-black/30">
-                <h3 className="text-xs font-bold text-gray-500 mb-2 tracking-widest">LOG</h3>
-                <div className="h-full overflow-y-auto flex flex-col gap-1 text-xs text-gray-600 font-mono scrollbar-thin">
+                <h3 className="text-sm font-bold text-gray-500 mb-2 tracking-widest">LOG</h3>
+                <div className="h-full overflow-y-auto flex flex-col gap-1 text-sm text-gray-400 font-mono scrollbar-thin">
                     {history.slice(-15).reverse().map((log, i) => (
-                        <div key={i}>&gt; {log}</div>
+                        <div key={i} className="text-gray-300">&gt; {log}</div>
                     ))}
                 </div>
             </div>

@@ -170,6 +170,15 @@ pub enum Instruction {
     /// Join a tournament.
     /// Binary: [16] [tournamentId:u64 BE]
     CasinoJoinTournament { tournament_id: u64 },
+
+    /// Start a tournament (transitions from Registration to Active phase).
+    /// Also resets all joined players' chips/shields/doubles to starting values.
+    /// Binary: [17] [tournamentId:u64 BE] [startTimeMs:u64 BE] [endTimeMs:u64 BE]
+    CasinoStartTournament {
+        tournament_id: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+    },
 }
 
 impl Write for Instruction {
@@ -202,6 +211,12 @@ impl Write for Instruction {
             Self::CasinoJoinTournament { tournament_id } => {
                 16u8.write(writer);
                 tournament_id.write(writer);
+            }
+            Self::CasinoStartTournament { tournament_id, start_time_ms, end_time_ms } => {
+                17u8.write(writer);
+                tournament_id.write(writer);
+                start_time_ms.write(writer);
+                end_time_ms.write(writer);
             }
         }
     }
@@ -255,6 +270,11 @@ impl Read for Instruction {
             14 => Self::CasinoToggleShield,
             15 => Self::CasinoToggleDouble,
             16 => Self::CasinoJoinTournament { tournament_id: u64::read(reader)? },
+            17 => Self::CasinoStartTournament {
+                tournament_id: u64::read(reader)?,
+                start_time_ms: u64::read(reader)?,
+                end_time_ms: u64::read(reader)?,
+            },
 
             i => return Err(Error::InvalidEnum(i)),
         };
@@ -274,6 +294,7 @@ impl EncodeSize for Instruction {
                 Self::CasinoGameMove { payload, .. } => 8 + 4 + payload.len(),
                 Self::CasinoToggleShield | Self::CasinoToggleDouble => 0,
                 Self::CasinoJoinTournament { .. } => 8,
+                Self::CasinoStartTournament { .. } => 8 + 8 + 8, // tournament_id + start_time_ms + end_time_ms
             }
     }
 }
@@ -727,6 +748,14 @@ pub enum Event {
         leaderboard: crate::casino::CasinoLeaderboard,
     },
 
+    // Error event (tag 29)
+    CasinoError {
+        player: PublicKey,
+        session_id: Option<u64>,
+        error_code: u8,
+        message: String,
+    },
+
     // Tournament events (tags 25-28)
     TournamentStarted {
         id: u64,
@@ -802,6 +831,19 @@ impl Write for Event {
                 24u8.write(writer);
                 leaderboard.write(writer);
             }
+            Self::CasinoError {
+                player,
+                session_id,
+                error_code,
+                message,
+            } => {
+                29u8.write(writer);
+                player.write(writer);
+                session_id.write(writer);
+                error_code.write(writer);
+                (message.len() as u32).write(writer);
+                writer.put_slice(message.as_bytes());
+            }
 
             // Tournament events (tags 25-28)
             Self::TournamentStarted { id, start_block } => {
@@ -873,6 +915,29 @@ impl Read for Event {
             24 => Self::CasinoLeaderboardUpdated {
                 leaderboard: crate::casino::CasinoLeaderboard::read(reader)?,
             },
+            29 => {
+                let player = PublicKey::read(reader)?;
+                let session_id = Option::<u64>::read(reader)?;
+                let error_code = u8::read(reader)?;
+                let message_len = u32::read(reader)? as usize;
+                const MAX_ERROR_MESSAGE_LENGTH: usize = 256;
+                if message_len > MAX_ERROR_MESSAGE_LENGTH {
+                    return Err(Error::Invalid("Event", "error message too long"));
+                }
+                if reader.remaining() < message_len {
+                    return Err(Error::EndOfBuffer);
+                }
+                let mut message_bytes = vec![0u8; message_len];
+                reader.copy_to_slice(&mut message_bytes);
+                let message = String::from_utf8(message_bytes)
+                    .map_err(|_| Error::Invalid("Event", "invalid UTF-8 in error message"))?;
+                Self::CasinoError {
+                    player,
+                    session_id,
+                    error_code,
+                    message,
+                }
+            }
 
             // Tournament events (tags 25-28)
             25 => Self::TournamentStarted {
@@ -945,6 +1010,18 @@ impl EncodeSize for Event {
                         + was_doubled.encode_size()
                 }
                 Self::CasinoLeaderboardUpdated { leaderboard } => leaderboard.encode_size(),
+                Self::CasinoError {
+                    player,
+                    session_id,
+                    error_code,
+                    message,
+                } => {
+                    player.encode_size()
+                        + session_id.encode_size()
+                        + error_code.encode_size()
+                        + 4
+                        + message.len()
+                }
 
                 // Tournament events (tags 25-28)
                 Self::TournamentStarted { id, start_block } => {

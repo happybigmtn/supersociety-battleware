@@ -12,6 +12,7 @@ import { BotConfig, DEFAULT_BOT_CONFIG, BotService } from '../services/BotServic
 const INITIAL_CHIPS = 1000;
 const INITIAL_SHIELDS = 3;
 const INITIAL_DOUBLES = 3;
+const MAX_GRAPH_POINTS = 100; // Limit for graph/history arrays to prevent memory leaks
 
 // Map frontend GameType to chain GameType
 const GAME_TYPE_MAP: Record<GameType, ChainGameType> = {
@@ -104,6 +105,7 @@ export const useTerminalGame = () => {
     crapsUndoStack: [],
     crapsInputMode: 'NONE',
     crapsRollHistory: [],
+    crapsLastRoundBets: [],
     rouletteBets: [],
     rouletteUndoStack: [],
     rouletteLastRoundBets: [],
@@ -152,6 +154,10 @@ export const useTerminalGame = () => {
   const clientRef = useRef<CasinoClient | null>(null);
   const publicKeyBytesRef = useRef<Uint8Array | null>(null);
 
+  // Balance update race condition fix: Track last WebSocket balance update time
+  const lastBalanceUpdateRef = useRef<number>(0);
+  const BALANCE_UPDATE_COOLDOWN = 2000; // 2 second cooldown after WebSocket update
+
   // Initialize chain service
   useEffect(() => {
     const initChain = async () => {
@@ -188,12 +194,21 @@ export const useTerminalGame = () => {
           const playerState = await client.getCasinoPlayer(keypair.publicKey);
           if (playerState) {
             console.log('[useTerminalGame] Found on-chain player state:', playerState);
+
+            // Check if we should respect WebSocket update cooldown
+            const timeSinceLastUpdate = Date.now() - lastBalanceUpdateRef.current;
+            const shouldUpdateBalance = timeSinceLastUpdate > BALANCE_UPDATE_COOLDOWN;
+
             setStats(prev => ({
               ...prev,
-              chips: playerState.chips,
+              chips: shouldUpdateBalance ? playerState.chips : prev.chips,
               shields: playerState.shields,
               doubles: playerState.doubles,
             }));
+
+            if (!shouldUpdateBalance) {
+              console.log('[useTerminalGame] Skipped balance update from polling (within cooldown)');
+            }
 
             // Sync active modifiers from chain
             setGameState(prev => ({
@@ -256,6 +271,77 @@ export const useTerminalGame = () => {
         const service = new CasinoChainService(client);
         setChainService(service);
         setIsOnChain(true);
+
+        // Fetch initial leaderboard
+        try {
+          const leaderboardData = await client.getCasinoLeaderboard();
+          if (leaderboardData && leaderboardData.entries) {
+            const myPublicKeyHex = keypair.publicKey
+              ? Array.from(keypair.publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
+              : null;
+
+            const newBoard = leaderboardData.entries.map((entry: { player?: string; name?: string; chips: bigint | number }) => ({
+              name: entry.name || `Player_${entry.player?.substring(0, 8)}`,
+              chips: Number(entry.chips),
+              status: 'ALIVE' as const
+            }));
+
+            // Check if current player is in the leaderboard
+            const isPlayerInBoard = myPublicKeyHex && leaderboardData.entries.some(
+              (entry: { player?: string }) => entry.player && entry.player.toLowerCase() === myPublicKeyHex.toLowerCase()
+            );
+
+            // Mark current player if in leaderboard
+            if (isPlayerInBoard && myPublicKeyHex) {
+              const playerIdx = leaderboardData.entries.findIndex(
+                (entry: { player?: string }) => entry.player && entry.player.toLowerCase() === myPublicKeyHex.toLowerCase()
+              );
+              if (playerIdx >= 0) {
+                newBoard[playerIdx].name = `${newBoard[playerIdx].name} (YOU)`;
+              }
+            }
+
+            newBoard.sort((a, b) => b.chips - a.chips);
+            setLeaderboard(newBoard);
+            console.log('[useTerminalGame] Initial leaderboard loaded:', newBoard.length, 'entries');
+          }
+        } catch (leaderboardError) {
+          console.debug('[useTerminalGame] Failed to fetch initial leaderboard:', leaderboardError);
+        }
+
+        // Fetch tournament state to sync timer on page load
+        try {
+          const CURRENT_TOURNAMENT_ID = 1; // Default tournament ID
+          const tournamentState = await client.getCasinoTournament(CURRENT_TOURNAMENT_ID);
+          if (tournamentState) {
+            console.log('[useTerminalGame] Found tournament state:', tournamentState);
+            // Check if tournament is active and has valid end time
+            // Client normalizes snake_case to camelCase, so use endTimeMs
+            if (tournamentState.phase === 'Active' && tournamentState.endTimeMs) {
+              const endTimeMs = Number(tournamentState.endTimeMs);
+              const now = Date.now();
+              if (endTimeMs > now) {
+                // Tournament is still active - sync the timer
+                console.log('[useTerminalGame] Syncing active tournament timer, end time:', endTimeMs);
+                setManualTournamentEndTime(endTimeMs);
+                setPhase('ACTIVE');
+                const remaining = Math.ceil((endTimeMs - now) / 1000);
+                setTournamentTime(remaining);
+              } else {
+                // Tournament has ended
+                console.log('[useTerminalGame] Tournament has ended');
+                setPhase('REGISTRATION');
+                setManualTournamentEndTime(null);
+              }
+            } else {
+              console.log('[useTerminalGame] Tournament not active, phase:', tournamentState.phase);
+            }
+          } else {
+            console.log('[useTerminalGame] No tournament state found on-chain');
+          }
+        } catch (tournamentError) {
+          console.debug('[useTerminalGame] Failed to fetch tournament state:', tournamentError);
+        }
       } catch (error) {
         console.error('[useTerminalGame] Failed to initialize chain service:', error);
         setIsOnChain(false);
@@ -266,6 +352,14 @@ export const useTerminalGame = () => {
 
   // Track tick counter for leaderboard polling (every 3 ticks = 3 seconds)
   const tickCounterRef = useRef(0);
+
+  // Track current chips with a ref to avoid stale closure in polling interval
+  const currentChipsRef = useRef(stats.chips);
+
+  // Keep chips ref in sync with stats
+  useEffect(() => {
+    currentChipsRef.current = stats.chips;
+  }, [stats.chips]);
 
   // --- TOURNAMENT CLOCK ---
   useEffect(() => {
@@ -297,9 +391,9 @@ export const useTerminalGame = () => {
         }
       }
 
-      // Poll on-chain leaderboard every 3 seconds during ACTIVE phase
+      // Poll on-chain leaderboard every 2 seconds during ACTIVE and REGISTRATION phases
       tickCounterRef.current++;
-      if (phase === 'ACTIVE' && clientRef.current && tickCounterRef.current % 3 === 0) {
+      if ((phase === 'ACTIVE' || phase === 'REGISTRATION') && clientRef.current && tickCounterRef.current % 2 === 0) {
         (async () => {
           try {
             const leaderboardData = await clientRef.current!.getCasinoLeaderboard();
@@ -322,8 +416,8 @@ export const useTerminalGame = () => {
               );
 
               // If not in leaderboard, add current player (they might be outside top 10)
-              if (!isPlayerInBoard && myPublicKeyHex) {
-                newBoard.push({ name: "YOU", chips: stats.chips, status: 'ALIVE' });
+              if (!isPlayerInBoard && myPublicKeyHex && isRegistered) {
+                newBoard.push({ name: "YOU", chips: currentChipsRef.current, status: 'ALIVE' });
               } else if (myPublicKeyHex) {
                 // Mark the current player's entry
                 const playerEntry = newBoard.find((_, idx) =>
@@ -345,13 +439,13 @@ export const useTerminalGame = () => {
               }
             }
           } catch (e) {
-            console.debug('[useTerminalGame] Failed to fetch leaderboard:', e);
+            console.warn('[useTerminalGame] Failed to fetch leaderboard:', e);
           }
         })();
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [stats.chips, phase, chainService, isRegistered, manualTournamentEndTime]);
+  }, [phase, chainService, isRegistered, manualTournamentEndTime]);
 
   // --- BOT SERVICE MANAGEMENT ---
   useEffect(() => {
@@ -401,14 +495,20 @@ export const useTerminalGame = () => {
 
   // Helper to generate descriptive result messages
   const generateResultMessage = (gameType: GameType, state: GameState | null, payout: number): string => {
-    const resultPart = payout >= 0 ? `Won ${payout}` : `Lost ${Math.abs(payout)}`;
+    // Show net P&L with sign (e.g., "+$50" or "-$50")
+    const resultPart = payout >= 0 ? `+$${payout}` : `-$${Math.abs(payout)}`;
 
     if (!state) return resultPart;
 
     switch (gameType) {
       case GameType.BACCARAT: {
-        const pScore = state.playerCards.reduce((sum, c) => (sum + getBaccaratValue([c])) % 10, 0);
-        const bScore = state.dealerCards.reduce((sum, c) => (sum + getBaccaratValue([c])) % 10, 0);
+        // Skip formatting if no cards dealt yet
+        if (state.playerCards.length === 0 || state.dealerCards.length === 0) {
+          return resultPart;
+        }
+        // Use getBaccaratValue directly on the full hand - it handles modulo internally
+        const pScore = getBaccaratValue(state.playerCards);
+        const bScore = getBaccaratValue(state.dealerCards);
         const winner = pScore > bScore ? 'PLAYER' : bScore > pScore ? 'BANKER' : 'TIE';
         // Show winner's score first
         const scoreDisplay = winner === 'TIE' ? `${pScore}-${bScore}` :
@@ -416,6 +516,10 @@ export const useTerminalGame = () => {
         return `${winner} wins ${scoreDisplay}. ${resultPart}`;
       }
       case GameType.BLACKJACK: {
+        // Defensive checks for missing card data
+        if (!state.playerCards?.length || !state.dealerCards?.length) {
+          return resultPart;
+        }
         const pVal = getHandValue(state.playerCards);
         const dVal = getHandValue(state.dealerCards);
         const pBust = pVal > 21;
@@ -452,8 +556,11 @@ export const useTerminalGame = () => {
       }
       case GameType.CRAPS: {
         if (!state.dice || state.dice.length < 2) return resultPart;
-        const total = state.dice[0] + state.dice[1];
-        return `Rolled ${total}. ${resultPart}`;
+        const d1 = state.dice[0];
+        const d2 = state.dice[1];
+        const total = d1 + d2;
+        // Simple message format: Rolled: [total]. Won $X / Lost $Y.
+        return `Rolled: ${total}. ${resultPart}`;
       }
       case GameType.ROULETTE: {
         const last = state.rouletteHistory[state.rouletteHistory.length - 1];
@@ -476,19 +583,23 @@ export const useTerminalGame = () => {
     if (!chainService || !isOnChain) return;
 
     const unsubStarted = chainService.onGameStarted((event: CasinoGameStartedEvent) => {
+      // Ensure both session IDs are BigInt for consistent comparison
+      const eventSessionId = BigInt(event.sessionId);
+      const currentSessionId = currentSessionIdRef.current ? BigInt(currentSessionIdRef.current) : null;
+
       // DEBUG: Log all incoming CasinoGameStarted events
       console.log('[useTerminalGame] CasinoGameStarted received:', {
-        eventSessionId: event.sessionId?.toString(),
-        eventSessionIdType: typeof event.sessionId,
-        currentSessionId: currentSessionIdRef.current?.toString(),
-        currentSessionIdType: typeof currentSessionIdRef.current,
-        match: event.sessionId === currentSessionIdRef.current,
+        eventSessionId: eventSessionId.toString(),
+        eventSessionIdType: typeof eventSessionId,
+        currentSessionId: currentSessionId?.toString(),
+        currentSessionIdType: typeof currentSessionId,
+        match: currentSessionId !== null && eventSessionId === currentSessionId,
         gameType: event.gameType,
         initialStateLen: event.initialState?.length,
       });
 
       // Only process events for our current session
-      if (currentSessionIdRef.current && event.sessionId === currentSessionIdRef.current) {
+      if (currentSessionId !== null && eventSessionId === currentSessionId) {
         console.log('[useTerminalGame] Session ID matched! Processing CasinoGameStarted');
         // Clear pending flag - session is now active and ready for moves
         isPendingRef.current = false;
@@ -507,36 +618,62 @@ export const useTerminalGame = () => {
           if (frontendGameType === GameType.CASINO_WAR && chainService && currentSessionIdRef.current) {
             const stage = event.initialState[2]; // [playerCard, dealerCard, stage]
             if (stage === 0) {
+              // Guard against duplicate submissions
+              if (isPendingRef.current) {
+                console.log('[useTerminalGame] Casino War auto-confirm blocked - transaction pending');
+                return;
+              }
+
               console.log('[useTerminalGame] Auto-confirming Casino War deal');
-              const payload = new Uint8Array([0]); // Confirm - triggers comparison
-              chainService.sendMove(currentSessionIdRef.current, payload)
-                .then(result => {
+              (async () => {
+                isPendingRef.current = true;
+                try {
+                  const payload = new Uint8Array([0]); // Confirm - triggers comparison
+                  const result = await chainService.sendMove(currentSessionIdRef.current!, payload);
                   if (result.txHash) setLastTxSig(result.txHash);
                   setGameState(prev => ({ ...prev, message: 'COMPARING...' }));
-                })
-                .catch(error => {
+                  // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
+                } catch (error) {
                   console.error('[useTerminalGame] Casino War auto-confirm failed:', error);
                   setGameState(prev => ({ ...prev, message: 'CONFIRM FAILED' }));
-                });
+                  // Only clear isPending on error, not on success
+                  isPendingRef.current = false;
+                }
+              })();
             }
           }
         } else {
           console.log('[useTerminalGame] Empty initial state, setting stage to PLAYING');
+          // Use game-appropriate message for empty initial state
+          const initialMessage = frontendGameType === GameType.CRAPS
+            ? 'PLACE BETS - SPACE TO ROLL'
+            : frontendGameType === GameType.ROULETTE
+            ? 'PLACE BETS - SPACE TO SPIN'
+            : frontendGameType === GameType.SIC_BO
+            ? 'PLACE BETS - SPACE TO ROLL'
+            : 'GAME STARTED - SPACE TO DEAL';
           setGameState(prev => ({
             ...prev,
             stage: 'PLAYING',
-            message: 'GAME STARTED - WAITING FOR CARDS',
+            message: initialMessage,
           }));
 
           // For Baccarat, auto-send bets then deal immediately after game starts
           // This allows single space bar press to start, place bets, and deal
           if (frontendGameType === GameType.BACCARAT && chainService && currentSessionIdRef.current) {
+            // Guard against duplicate submissions
+            if (isPendingRef.current) {
+              console.log('[useTerminalGame] Baccarat auto-deal blocked - transaction pending');
+              return;
+            }
+
             const mainBetAmount = gameStateRef.current?.bet ?? 100;
             const betsToPlace = getBaccaratBetsToPlace(baccaratSelectionRef.current, baccaratBetsRef.current, mainBetAmount);
             console.log('[useTerminalGame] Auto-dealing Baccarat with bets:', betsToPlace);
 
             // Send all bets sequentially, then deal
             (async () => {
+              isPendingRef.current = true;
               try {
                 setGameState(prev => ({ ...prev, message: 'PLACING BETS...' }));
 
@@ -552,12 +689,160 @@ export const useTerminalGame = () => {
                 const dealPayload = new Uint8Array([1]); // Action 1: Deal cards
                 const result = await chainService.sendMove(currentSessionIdRef.current!, dealPayload);
                 if (result.txHash) setLastTxSig(result.txHash);
+                // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
               } catch (error) {
                 console.error('[useTerminalGame] Baccarat auto-deal failed:', error);
                 setGameState(prev => ({ ...prev, message: 'DEAL FAILED' }));
+                // Only clear isPending on error, not on success
+                isPendingRef.current = false;
               }
             })();
           }
+
+          // For Roulette, auto-send bets then spin immediately after game starts
+          if (frontendGameType === GameType.ROULETTE && chainService && currentSessionIdRef.current) {
+            // Guard against duplicate submissions
+            if (isPendingRef.current) {
+              console.log('[useTerminalGame] Roulette auto-spin blocked - transaction pending');
+              return;
+            }
+
+            const rouletteBets = gameStateRef.current?.rouletteBets ?? [];
+            if (rouletteBets.length > 0) {
+              console.log('[useTerminalGame] Auto-spinning Roulette with bets:', rouletteBets);
+
+              (async () => {
+                isPendingRef.current = true;
+                try {
+                  setGameState(prev => ({ ...prev, message: 'PLACING BETS...' }));
+
+                  // Send all bets (action 0 for each)
+                  for (const bet of rouletteBets) {
+                    const betPayload = serializeRouletteBet(bet);
+                    const result = await chainService.sendMove(currentSessionIdRef.current!, betPayload);
+                    if (result.txHash) setLastTxSig(result.txHash);
+                  }
+
+                  // Send spin command (action 1)
+                  setGameState(prev => ({ ...prev, message: 'SPINNING ON CHAIN...' }));
+                  const spinPayload = new Uint8Array([1]);
+                  const result = await chainService.sendMove(currentSessionIdRef.current!, spinPayload);
+                  if (result.txHash) setLastTxSig(result.txHash);
+
+                  // Clear bets from UI
+                  setGameState(prev => ({
+                    ...prev,
+                    rouletteLastRoundBets: prev.rouletteBets,
+                    rouletteBets: [],
+                    rouletteUndoStack: []
+                  }));
+                  // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
+                } catch (error) {
+                  console.error('[useTerminalGame] Roulette auto-spin failed:', error);
+                  setGameState(prev => ({ ...prev, message: 'SPIN FAILED' }));
+                  // Only clear isPending on error, not on success
+                  isPendingRef.current = false;
+                }
+              })();
+            }
+          }
+
+          // For SicBo, auto-send bets then roll immediately after game starts
+          if (frontendGameType === GameType.SIC_BO && chainService && currentSessionIdRef.current) {
+            // Guard against duplicate submissions
+            if (isPendingRef.current) {
+              console.log('[useTerminalGame] SicBo auto-roll blocked - transaction pending');
+              return;
+            }
+
+            const sicBoBets = gameStateRef.current?.sicBoBets ?? [];
+            if (sicBoBets.length > 0) {
+              console.log('[useTerminalGame] Auto-rolling SicBo with bets:', sicBoBets);
+
+              (async () => {
+                isPendingRef.current = true;
+                try {
+                  setGameState(prev => ({ ...prev, message: 'PLACING BETS...' }));
+
+                  // Send all bets (action 0 for each)
+                  for (const bet of sicBoBets) {
+                    const betPayload = serializeSicBoBet(bet);
+                    const result = await chainService.sendMove(currentSessionIdRef.current!, betPayload);
+                    if (result.txHash) setLastTxSig(result.txHash);
+                  }
+
+                  // Send roll command (action 1)
+                  setGameState(prev => ({ ...prev, message: 'ROLLING ON CHAIN...' }));
+                  const rollPayload = new Uint8Array([1]);
+                  const result = await chainService.sendMove(currentSessionIdRef.current!, rollPayload);
+                  if (result.txHash) setLastTxSig(result.txHash);
+
+                  // Clear bets from UI
+                  setGameState(prev => ({
+                    ...prev,
+                    sicBoLastRoundBets: prev.sicBoBets,
+                    sicBoBets: [],
+                    sicBoUndoStack: []
+                  }));
+                  // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
+                } catch (error) {
+                  console.error('[useTerminalGame] SicBo auto-roll failed:', error);
+                  setGameState(prev => ({ ...prev, message: 'ROLL FAILED' }));
+                  // Only clear isPending on error, not on success
+                  isPendingRef.current = false;
+                }
+              })();
+            }
+          }
+
+          // For Craps, auto-send bets then roll immediately after game starts
+          if (frontendGameType === GameType.CRAPS && chainService && currentSessionIdRef.current) {
+            // Guard against duplicate submissions
+            if (isPendingRef.current) {
+              console.log('[useTerminalGame] Craps auto-roll blocked - transaction pending');
+              return;
+            }
+
+            // Only auto-send LOCAL bets (not already on-chain)
+            const localBets = (gameStateRef.current?.crapsBets ?? []).filter(b => b.local === true);
+            if (localBets.length > 0) {
+              console.log('[useTerminalGame] Auto-rolling Craps with local bets:', localBets);
+
+              (async () => {
+                isPendingRef.current = true;
+                try {
+                  setGameState(prev => ({ ...prev, message: 'PLACING BETS...' }));
+
+                  // Send only LOCAL bets (action 0 for each)
+                  for (const bet of localBets) {
+                    const betPayload = serializeCrapsBet(bet);
+                    const result = await chainService.sendMove(currentSessionIdRef.current!, betPayload);
+                    if (result.txHash) setLastTxSig(result.txHash);
+                  }
+
+                  // Send roll command (action 2)
+                  setGameState(prev => ({ ...prev, message: 'ROLLING ON CHAIN...' }));
+                  const rollPayload = new Uint8Array([2]);
+                  const result = await chainService.sendMove(currentSessionIdRef.current!, rollPayload);
+                  if (result.txHash) setLastTxSig(result.txHash);
+
+                  // Clear local bets from UI (chain state will repopulate on-chain bets)
+                  setGameState(prev => ({
+                    ...prev,
+                    crapsBets: prev.crapsBets.filter(b => !b.local),
+                    crapsUndoStack: []
+                  }));
+                  // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
+                } catch (error) {
+                  console.error('[useTerminalGame] Craps auto-roll failed:', error);
+                  setGameState(prev => ({ ...prev, message: 'ROLL FAILED' }));
+                  // Only clear isPending on error, not on success
+                  isPendingRef.current = false;
+                }
+              })();
+            }
+          }
+
         }
       } else {
         console.log('[useTerminalGame] Session ID mismatch or no current session');
@@ -565,30 +850,60 @@ export const useTerminalGame = () => {
     });
 
     const unsubMoved = chainService.onGameMoved((event: CasinoGameMovedEvent) => {
+      // Ensure both session IDs are BigInt for consistent comparison
+      const eventSessionId = BigInt(event.sessionId);
+      const currentSessionId = currentSessionIdRef.current ? BigInt(currentSessionIdRef.current) : null;
+
+      // DEBUG: Log all incoming CasinoGameMoved events
+      console.log('[useTerminalGame] CasinoGameMoved received:', {
+        eventSessionId: eventSessionId.toString(),
+        eventSessionIdType: typeof eventSessionId,
+        currentSessionId: currentSessionId?.toString(),
+        currentSessionIdType: typeof currentSessionId,
+        match: currentSessionId !== null && eventSessionId === currentSessionId,
+        newStateLen: event.newState?.length,
+        gameType: gameTypeRef.current,
+        isPending: isPendingRef.current,
+      });
+
       // Only process events for our current session
-      if (currentSessionIdRef.current && event.sessionId === currentSessionIdRef.current) {
+      if (currentSessionId !== null && eventSessionId === currentSessionId) {
+        console.log('[useTerminalGame] Session ID matched! Parsing new state for game type:', gameTypeRef.current);
         // Parse state and update UI using the tracked game type from ref (not stale closure)
         parseGameState(event.newState, gameTypeRef.current);
+
+        // Clear pending flag since we received the chain response
+        console.log('[useTerminalGame] Clearing isPending flag after CasinoGameMoved');
+        isPendingRef.current = false;
+      } else {
+        console.log('[useTerminalGame] Session ID mismatch or no current session - ignoring CasinoGameMoved');
       }
     });
 
     const unsubCompleted = chainService.onGameCompleted((event: CasinoGameCompletedEvent) => {
+      // Ensure both session IDs are BigInt for consistent comparison
+      const eventSessionId = BigInt(event.sessionId);
+      const currentSessionId = currentSessionIdRef.current ? BigInt(currentSessionIdRef.current) : null;
+
       // DEBUG: Log all incoming CasinoGameCompleted events
       console.log('[useTerminalGame] CasinoGameCompleted received:', {
-        eventSessionId: event.sessionId?.toString(),
-        eventSessionIdType: typeof event.sessionId,
-        currentSessionId: currentSessionIdRef.current?.toString(),
-        currentSessionIdType: typeof currentSessionIdRef.current,
-        match: event.sessionId === currentSessionIdRef.current,
+        eventSessionId: eventSessionId.toString(),
+        eventSessionIdType: typeof eventSessionId,
+        currentSessionId: currentSessionId?.toString(),
+        currentSessionIdType: typeof currentSessionId,
+        match: currentSessionId !== null && eventSessionId === currentSessionId,
         finalChips: event.finalChips?.toString(),
         payout: event.payout?.toString(),
       });
 
       // Only process events for our current session
-      if (currentSessionIdRef.current && event.sessionId === currentSessionIdRef.current) {
+      if (currentSessionId !== null && eventSessionId === currentSessionId) {
         const payout = Number(event.payout);
         const finalChips = Number(event.finalChips);
         console.log('[useTerminalGame] Session ID matched! Updating chips to:', finalChips);
+
+        // Mark the time of this WebSocket balance update to prevent polling from overwriting
+        lastBalanceUpdateRef.current = Date.now();
 
         // Generate descriptive result message using current game state
         const resultMessage = generateResultMessage(gameTypeRef.current, gameStateRef.current, payout);
@@ -606,7 +921,7 @@ export const useTerminalGame = () => {
             // Add to history log
             history: [...prev.history, resultMessage],
             pnlByGame: { ...prev.pnlByGame, ...pnlEntry },
-            pnlHistory: [...prev.pnlHistory, (prev.pnlHistory[prev.pnlHistory.length - 1] || 0) + payout],
+            pnlHistory: [...prev.pnlHistory, (prev.pnlHistory[prev.pnlHistory.length - 1] || 0) + payout].slice(-MAX_GRAPH_POINTS),
           };
         });
 
@@ -632,12 +947,59 @@ export const useTerminalGame = () => {
       }
     });
 
+    const unsubLeaderboard = chainService.onLeaderboardUpdated((leaderboardData: any) => {
+      console.log('[useTerminalGame] Leaderboard updated event:', leaderboardData);
+      try {
+        if (leaderboardData && leaderboardData.entries) {
+          const myPublicKeyHex = publicKeyBytesRef.current
+            ? Array.from(publicKeyBytesRef.current).map(b => b.toString(16).padStart(2, '0')).join('')
+            : null;
+
+          const newBoard = leaderboardData.entries.map((entry: { player?: string; name?: string; chips: bigint | number }) => ({
+            name: entry.name || `Player_${entry.player?.substring(0, 8)}`,
+            chips: Number(entry.chips),
+            status: 'ALIVE' as const
+          }));
+
+          // Check if current player is in the leaderboard
+          const isPlayerInBoard = myPublicKeyHex && leaderboardData.entries.some(
+            (entry: { player?: string }) => entry.player && entry.player.toLowerCase() === myPublicKeyHex.toLowerCase()
+          );
+
+          // If not in leaderboard, add current player (they might be outside top 10)
+          if (!isPlayerInBoard && myPublicKeyHex && isRegistered) {
+            newBoard.push({ name: "YOU", chips: currentChipsRef.current, status: 'ALIVE' });
+          } else if (myPublicKeyHex) {
+            // Mark the current player's entry
+            const playerIdx = leaderboardData.entries.findIndex(
+              (entry: { player?: string }) => entry.player && entry.player.toLowerCase() === myPublicKeyHex.toLowerCase()
+            );
+            if (playerIdx >= 0) {
+              newBoard[playerIdx].name = `${newBoard[playerIdx].name} (YOU)`;
+            }
+          }
+
+          newBoard.sort((a, b) => b.chips - a.chips);
+          setLeaderboard(newBoard);
+
+          // Update player's rank
+          const myRank = newBoard.findIndex(p => p.name.includes("YOU")) + 1;
+          if (myRank > 0) {
+            setStats(s => ({ ...s, rank: myRank }));
+          }
+        }
+      } catch (e) {
+        console.error('[useTerminalGame] Failed to process leaderboard update:', e);
+      }
+    });
+
     return () => {
       unsubStarted();
       unsubMoved();
       unsubCompleted();
+      unsubLeaderboard();
     };
-  }, [chainService, isOnChain]);
+  }, [chainService, isOnChain, isRegistered]);
 
   // Helper to parse game state from event
   const parseGameState = (stateBlob: Uint8Array, gameType?: GameType) => {
@@ -647,35 +1009,109 @@ export const useTerminalGame = () => {
 
       // Parse based on game type
       if (currentType === GameType.BLACKJACK) {
-        // [pLen:u8] [pCards:u8×pLen] [dLen:u8] [dCards:u8×dLen] [stage:u8]
+        console.log('[parseGameState] Blackjack state blob received:', {
+          length: stateBlob.length,
+          bytes: Array.from(stateBlob).slice(0, 20),
+          fullBlob: Array.from(stateBlob),
+        });
         if (stateBlob.length < 3) {
-          console.error('[parseGameState] Blackjack state blob too short:', stateBlob.length);
+          console.error('[parseGameState] Blackjack state blob too short');
           return;
         }
+
         let offset = 0;
-        const pLen = stateBlob[offset++];
-        // Validate blob length: need pLen + 1 (dLen) + at least 1 dealer card + 1 (stage)
-        const minExpectedLength = 1 + pLen + 1 + 1 + 1; // pLen byte + pCards + dLen byte + at least 1 dCard + stage
-        if (stateBlob.length < minExpectedLength) {
-          console.error('[parseGameState] Blackjack state blob too short for pLen:', pLen, 'blob length:', stateBlob.length);
-          return;
+        const versionOrPLen = stateBlob[offset++];
+        console.log('[parseGameState] Blackjack version/pLen:', versionOrPLen);
+        
+        let pCards: Card[] = [];
+        let dCards: Card[] = [];
+        let stage = 0;
+        let pendingStack: { cards: Card[], bet: number, isDoubled: boolean }[] = [];
+        let finishedHands: CompletedHand[] = [];
+        let activeHandIdx = 0;
+
+        // Version 1 starts with 1. Legacy starts with pLen (>= 2).
+        if (versionOrPLen === 1) {
+            // New format (v1)
+            activeHandIdx = stateBlob[offset++];
+            const handCount = stateBlob[offset++];
+            
+            // When activeHandIdx >= handCount, all hands are finished (dealer's turn or game over)
+            // In this case, we still want to display the last played hand as "playerCards"
+            const allHandsFinished = activeHandIdx >= handCount;
+
+            for (let h = 0; h < handCount; h++) {
+                const betMult = stateBlob[offset++];
+                const status = stateBlob[offset++]; // 0=Play, 1=Stand, 2=Bust, 3=BJ
+                const cLen = stateBlob[offset++];
+
+                const handCards: Card[] = [];
+                for (let i = 0; i < cLen; i++) {
+                    handCards.push(decodeCard(stateBlob[offset++]));
+                }
+
+                const isDoubled = betMult === 2;
+                // Use current bet from state, or default to 100 if missing
+                const baseBet = gameStateRef.current?.bet || 100;
+                const handBet = baseBet * betMult;
+
+                if (h === activeHandIdx) {
+                    // This is the currently active hand
+                    pCards = handCards;
+                } else if (allHandsFinished && h === handCount - 1) {
+                    // All hands finished - show the last hand as player cards for display
+                    pCards = handCards;
+                } else if (h > activeHandIdx) {
+                    pendingStack.push({ cards: handCards, bet: handBet, isDoubled });
+                } else {
+                    // Completed hand (for multi-hand scenarios like splits)
+                    let msg = "";
+                    if (status === 2) msg = "BUST";
+                    else if (status === 3) msg = "BLACKJACK";
+                    else if (status === 1) msg = "STAND";
+
+                    finishedHands.push({
+                        cards: handCards,
+                        bet: handBet,
+                        isDoubled,
+                        message: msg
+                    });
+                }
+            }
+            
+            // Dealer cards
+            const dLen = stateBlob[offset++];
+            for (let i = 0; i < dLen; i++) {
+                dCards.push(decodeCard(stateBlob[offset++]));
+            }
+            
+            stage = offset < stateBlob.length ? stateBlob[offset++] : 0;
+
+            console.log('[parseGameState] Blackjack v1 parsed:', {
+              activeHandIdx,
+              handCount: pCards.length > 0 ? 1 : 0,
+              playerCardsCount: pCards.length,
+              playerCards: pCards.map(c => `${c.rank}${c.suit}`),
+              dealerCardsCount: dCards.length,
+              dealerCards: dCards.map(c => `${c.rank}${c.suit}`),
+              stage,
+              pendingStackLen: pendingStack.length,
+              finishedHandsLen: finishedHands.length,
+            });
+        } else {
+            // Legacy format fallback
+            const pLen = versionOrPLen;
+            for (let i = 0; i < pLen && offset < stateBlob.length; i++) {
+                const cardVal = stateBlob[offset++];
+                pCards.push(decodeCard(cardVal));
+            }
+            const dLen = stateBlob[offset++];
+            for (let i = 0; i < dLen && offset < stateBlob.length; i++) {
+                const cardVal = stateBlob[offset++];
+                dCards.push(decodeCard(cardVal));
+            }
+            stage = offset < stateBlob.length ? stateBlob[offset++] : 0;
         }
-        const pCards: Card[] = [];
-        for (let i = 0; i < pLen && offset < stateBlob.length; i++) {
-          const cardVal = stateBlob[offset++];
-          pCards.push(decodeCard(cardVal));
-        }
-        if (offset >= stateBlob.length) {
-          console.error('[parseGameState] Blackjack state blob ended early at offset:', offset);
-          return;
-        }
-        const dLen = stateBlob[offset++];
-        const dCards: Card[] = [];
-        for (let i = 0; i < dLen && offset < stateBlob.length; i++) {
-          const cardVal = stateBlob[offset++];
-          dCards.push(decodeCard(cardVal)); // Parse cards first, set isHidden after we know stage
-        }
-        const stage = offset < stateBlob.length ? stateBlob[offset++] : 0;
 
         // Set isHidden based on stage: reveal all cards when game is complete (stage=2)
         const isComplete = stage === 2;
@@ -684,19 +1120,22 @@ export const useTerminalGame = () => {
           isHidden: !isComplete && i > 0 // Only hide non-first cards during play
         }));
 
-        setGameState(prev => {
-          const newState = {
-            ...prev,
-            type: currentType,
-            playerCards: pCards,
-            dealerCards: dealerCardsWithVisibility,
-            stage: (isComplete ? 'RESULT' : 'PLAYING') as 'RESULT' | 'PLAYING',
-            message: isComplete ? 'GAME COMPLETE' : 'HIT (H) / STAND (S)',
-          };
-          // Update ref synchronously so CasinoGameCompleted handler has access to cards
-          gameStateRef.current = newState;
-          return newState;
-        });
+        // Build new state and update ref BEFORE setGameState to avoid race condition
+        // with CasinoGameCompleted event that may arrive before setGameState callback runs
+        const prevState = gameStateRef.current;
+        const newState = {
+          ...prevState,
+          type: currentType,
+          playerCards: pCards,
+          dealerCards: dealerCardsWithVisibility,
+          blackjackStack: pendingStack,
+          completedHands: finishedHands,
+          stage: (isComplete ? 'RESULT' : 'PLAYING') as 'RESULT' | 'PLAYING',
+          message: isComplete ? 'GAME COMPLETE' : 'HIT (H) / STAND (S)',
+        };
+        // Update ref synchronously BEFORE setGameState
+        gameStateRef.current = newState;
+        setGameState(newState);
       } else if (currentType === GameType.HILO) {
         // [currentCard:u8] [accumulator:i64 BE]
         // Accumulator is in basis points (10000 = 1x multiplier)
@@ -706,6 +1145,20 @@ export const useTerminalGame = () => {
         }
         const currentCard = decodeCard(stateBlob[0]);
         const accumulatorBasisPoints = Number(view.getBigInt64(1, false)); // Big Endian
+
+        // Update ref BEFORE setGameState to ensure CasinoGameCompleted handler has access to cards
+        // (React 18's automatic batching defers the updater function execution)
+        if (gameStateRef.current) {
+          const prevCards = gameStateRef.current.playerCards || [];
+          const lastCard = prevCards.length > 0 ? prevCards[prevCards.length - 1] : null;
+          const newCards = (lastCard && lastCard.rank === currentCard.rank && lastCard.suit === currentCard.suit)
+            ? prevCards
+            : [...prevCards, currentCard];
+          gameStateRef.current = {
+            ...gameStateRef.current,
+            playerCards: newCards,
+          };
+        }
 
         setGameState(prev => {
           // Calculate actual pot value: bet * accumulator / 10000
@@ -722,11 +1175,11 @@ export const useTerminalGame = () => {
             type: currentType,
             playerCards: newCards,
             hiloAccumulator: actualPot,
-            hiloGraphData: [...(prev.hiloGraphData || []), actualPot],
+            hiloGraphData: [...(prev.hiloGraphData || []), actualPot].slice(-MAX_GRAPH_POINTS),
             stage: 'PLAYING' as const,
             message: `POT: $${actualPot.toLocaleString()} | HIGHER (H) / LOWER (L)`,
           };
-          // Update ref synchronously so CasinoGameCompleted handler has access to cards
+          // Also update ref inside for consistency
           gameStateRef.current = newState;
           return newState;
         });
@@ -835,6 +1288,15 @@ export const useTerminalGame = () => {
           cards.push(decodeCard(stateBlob[i]));
         }
 
+        // Update ref BEFORE setGameState to ensure CasinoGameCompleted handler has access to cards
+        // (React 18's automatic batching defers the updater function execution)
+        if (gameStateRef.current) {
+          gameStateRef.current = {
+            ...gameStateRef.current,
+            playerCards: cards,
+          };
+        }
+
         setGameState(prev => {
           const newState = {
             ...prev,
@@ -843,7 +1305,7 @@ export const useTerminalGame = () => {
             stage: (stage === 1 ? 'RESULT' : 'PLAYING') as 'RESULT' | 'PLAYING',
             message: stage === 0 ? 'HOLD (1-5), DRAW (D)' : 'GAME COMPLETE',
           };
-          // Update ref synchronously so CasinoGameCompleted handler has access to cards
+          // Also update ref inside for consistency
           gameStateRef.current = newState;
           return newState;
         });
@@ -857,6 +1319,16 @@ export const useTerminalGame = () => {
         const dealerCard = decodeCard(stateBlob[1]);
         const stage = stateBlob[2];
 
+        // Update ref BEFORE setGameState to ensure CasinoGameCompleted handler has access to cards
+        // (React 18's automatic batching defers the updater function execution)
+        if (gameStateRef.current) {
+          gameStateRef.current = {
+            ...gameStateRef.current,
+            playerCards: [playerCard],
+            dealerCards: [dealerCard],
+          };
+        }
+
         // Stage: 0 = Initial (cards dealt), 1 = War (tie occurred)
         // Game completion comes from CasinoGameCompleted event, not stage value
         setGameState(prev => {
@@ -868,7 +1340,7 @@ export const useTerminalGame = () => {
             stage: 'PLAYING' as const,
             message: stage === 1 ? 'WAR! GO TO WAR (W) / SURRENDER (S)' : 'DEALT',
           };
-          // Update ref synchronously so CasinoGameCompleted handler has access to cards
+          // Also update ref inside for consistency
           gameStateRef.current = newState;
           return newState;
         });
@@ -914,6 +1386,16 @@ export const useTerminalGame = () => {
           offset += 19;
         }
 
+        // Update ref BEFORE setGameState to ensure CasinoGameCompleted handler has access to dice
+        // (React 18's automatic batching defers the updater function execution)
+        if (gameStateRef.current) {
+          gameStateRef.current = {
+            ...gameStateRef.current,
+            dice: [d1, d2],
+            crapsPoint: mainPoint > 0 ? mainPoint : null,
+          };
+        }
+
         setGameState(prev => {
           // Only update history if dice actually changed (avoids duplicate entries from multiple events)
           const prevDice = prev.dice;
@@ -922,19 +1404,22 @@ export const useTerminalGame = () => {
           // Reset roll history when 7 is rolled (seven-out), otherwise only add if dice changed
           let newHistory = prev.crapsRollHistory;
           if (diceChanged) {
-            newHistory = total === 7 ? [total] : [...prev.crapsRollHistory, total];
+            newHistory = total === 7 ? [total] : [...prev.crapsRollHistory, total].slice(-MAX_GRAPH_POINTS);
           }
 
-          return {
+          const newState = {
             ...prev,
             type: currentType,
             dice: [d1, d2],
             crapsPoint: mainPoint > 0 ? mainPoint : null,
             crapsBets: parsedBets,
             crapsRollHistory: newHistory,
-            stage: 'PLAYING',
-            message: phase === 0 ? `COME OUT ROLL: ${total}` : `POINT: ${mainPoint} | ROLLED: ${total}`,
+            stage: 'PLAYING' as const,
+            message: `ROLLED ${total}`,
           };
+          // Also update ref inside for consistency
+          gameStateRef.current = newState;
+          return newState;
         });
       } else if (currentType === GameType.ROULETTE) {
         // State format: [bet_count:u8] [bets:10bytes×count] [result:u8]?
@@ -957,7 +1442,7 @@ export const useTerminalGame = () => {
           setGameState(prev => ({
             ...prev,
             type: currentType,
-            rouletteHistory: [...prev.rouletteHistory, result],
+            rouletteHistory: [...prev.rouletteHistory, result].slice(-MAX_GRAPH_POINTS),
             stage: 'RESULT',
             message: `LANDED ON ${result}`,
           }));
@@ -994,7 +1479,7 @@ export const useTerminalGame = () => {
             ...prev,
             type: currentType,
             dice: dice,
-            sicBoHistory: [...prev.sicBoHistory, dice],
+            sicBoHistory: [...prev.sicBoHistory, dice].slice(-MAX_GRAPH_POINTS),
             stage: 'RESULT',
             message: `ROLLED ${total} (${dice.join('-')})`,
           }));
@@ -1139,7 +1624,10 @@ export const useTerminalGame = () => {
   }
 
   const startGame = async (type: GameType) => {
-    // Optimistic update
+    // Clear pending flag when starting a new game - prevents stale flag from blocking auto-deal
+    isPendingRef.current = false;
+
+    // Optimistic update - preserve table game bets for immediate re-deal
     setGameState(prev => ({
       ...prev,
       type,
@@ -1151,23 +1639,28 @@ export const useTerminalGame = () => {
       communityCards: [],
       dice: [],
       crapsPoint: null,
-      crapsBets: [],
-      crapsUndoStack: [],
+      // Preserve craps bets when restarting same game type for single-press deal
+      crapsBets: type === GameType.CRAPS ? prev.crapsBets : [],
+      crapsUndoStack: type === GameType.CRAPS ? prev.crapsUndoStack : [],
       crapsInputMode: 'NONE',
-      crapsRollHistory: [],
-      rouletteBets: [],
-      rouletteUndoStack: [],
-      rouletteLastRoundBets: [],
-      rouletteHistory: [],
+      crapsRollHistory: type === GameType.CRAPS ? prev.crapsRollHistory : [],
+      crapsLastRoundBets: prev.crapsLastRoundBets,
+      // Preserve roulette bets when restarting
+      rouletteBets: type === GameType.ROULETTE ? prev.rouletteBets : [],
+      rouletteUndoStack: type === GameType.ROULETTE ? prev.rouletteUndoStack : [],
+      rouletteLastRoundBets: prev.rouletteLastRoundBets,
+      rouletteHistory: prev.rouletteHistory,
       rouletteInputMode: 'NONE',
-      sicBoBets: [],
-      sicBoHistory: [],
+      // Preserve sic bo bets when restarting
+      sicBoBets: type === GameType.SIC_BO ? prev.sicBoBets : [],
+      sicBoHistory: prev.sicBoHistory,
       sicBoInputMode: 'NONE',
-      sicBoUndoStack: [],
-      sicBoLastRoundBets: [],
-      baccaratBets: [],
-      baccaratUndoStack: [],
-      baccaratLastRoundBets: [],
+      sicBoUndoStack: type === GameType.SIC_BO ? prev.sicBoUndoStack : [],
+      sicBoLastRoundBets: prev.sicBoLastRoundBets,
+      // Preserve baccarat bets when restarting
+      baccaratBets: type === GameType.BACCARAT ? prev.baccaratBets : [],
+      baccaratUndoStack: type === GameType.BACCARAT ? prev.baccaratUndoStack : [],
+      baccaratLastRoundBets: prev.baccaratLastRoundBets,
       lastResult: 0,
       activeModifiers: { shield: false, double: false },
       baccaratSelection: prev.baccaratSelection, // Preserve selection from previous game
@@ -1205,12 +1698,21 @@ export const useTerminalGame = () => {
                 localStorage.setItem(`casino_registered_${privateKeyHex}`, 'true');
               }
               setIsRegistered(true);
+
+              // Check if we should respect WebSocket update cooldown
+              const timeSinceLastUpdate = Date.now() - lastBalanceUpdateRef.current;
+              const shouldUpdateBalance = timeSinceLastUpdate > BALANCE_UPDATE_COOLDOWN;
+
               setStats(prev => ({
                 ...prev,
-                chips: existingPlayer.chips,
+                chips: shouldUpdateBalance ? existingPlayer.chips : prev.chips,
                 shields: existingPlayer.shields,
                 doubles: existingPlayer.doubles,
               }));
+
+              if (!shouldUpdateBalance) {
+                console.log('[useTerminalGame] Skipped balance update from registration polling (within cooldown)');
+              }
             } else {
               // Player doesn't exist on-chain - clear stale localStorage flag
               console.log('[useTerminalGame] Player NOT found on-chain, clearing stale registration flag');
@@ -1249,12 +1751,21 @@ export const useTerminalGame = () => {
               const playerState = await clientRef.current?.getCasinoPlayer(publicKeyBytesRef.current!);
               if (playerState) {
                 console.log('[useTerminalGame] Registration confirmed:', playerState);
+
+                // Check if we should respect WebSocket update cooldown
+                const timeSinceLastUpdate = Date.now() - lastBalanceUpdateRef.current;
+                const shouldUpdateBalance = timeSinceLastUpdate > BALANCE_UPDATE_COOLDOWN;
+
                 setStats(prev => ({
                   ...prev,
-                  chips: playerState.chips,
+                  chips: shouldUpdateBalance ? playerState.chips : prev.chips,
                   shields: playerState.shields,
                   doubles: playerState.doubles,
                 }));
+
+                if (!shouldUpdateBalance) {
+                  console.log('[useTerminalGame] Skipped balance update from registration confirmation polling (within cooldown)');
+                }
                 break;
               }
             } catch (e) {
@@ -1273,8 +1784,15 @@ export const useTerminalGame = () => {
         gameTypeRef.current = type;
         setCurrentSessionId(sessionId);
 
+        // For table games (Baccarat, Craps, Roulette, Sic Bo), actual bets are placed via moves.
+        // However, the chain requires a non-zero initial bet to start a game.
+        // We pass the minimum bet amount (1) which satisfies the chain requirement.
+        // For other games (Blackjack, etc.), the initial bet is used.
+        const isTableGame = [GameType.BACCARAT, GameType.CRAPS, GameType.ROULETTE, GameType.SIC_BO].includes(type);
+        const initialBetAmount = isTableGame ? 1n : BigInt(gameState.bet);
+
         // Now submit the transaction - WebSocket events can be matched immediately
-        const result = await chainService.startGameWithSessionId(chainGameType, BigInt(gameState.bet), sessionId);
+        const result = await chainService.startGameWithSessionId(chainGameType, initialBetAmount, sessionId);
         if (result.txHash) setLastTxSig(result.txHash);
 
         // State will update when CasinoGameStarted event arrives
@@ -1426,18 +1944,30 @@ export const useTerminalGame = () => {
   
   // BLACKJACK ENGINE
   const bjHit = async () => {
+    // Prevent double-submission
+    if (isPendingRef.current) {
+      console.log('[bjHit] Blocked - transaction already pending');
+      return;
+    }
+
     // If on-chain mode, submit move
     if (isOnChain && chainService && currentSessionIdRef.current) {
       try {
+        isPendingRef.current = true;
+        console.log('[bjHit] Set isPending = true, sending move...');
         // Payload: [0] for Hit
         const result = await chainService.sendMove(currentSessionIdRef.current, new Uint8Array([0]));
         if (result.txHash) setLastTxSig(result.txHash);
         // State will update when CasinoGameMoved event arrives
+        // NOTE: Do NOT clear isPendingRef here - wait for the event
         setGameState(prev => ({ ...prev, message: 'HITTING...' }));
+        console.log('[bjHit] Move sent successfully, waiting for chain event...');
         return;
       } catch (error) {
         console.error('[useTerminalGame] Hit failed:', error);
         setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+        // Only clear isPending on error, not on success
+        isPendingRef.current = false;
         return;
       }
     }
@@ -1498,17 +2028,29 @@ export const useTerminalGame = () => {
   };
 
   const bjStand = async () => {
+    // Prevent double-submission
+    if (isPendingRef.current) {
+      console.log('[bjStand] Blocked - transaction already pending');
+      return;
+    }
+
     // If on-chain mode, submit move
     if (isOnChain && chainService && currentSessionIdRef.current) {
       try {
+        isPendingRef.current = true;
+        console.log('[bjStand] Set isPending = true, sending move...');
         // Payload: [1] for Stand
         const result = await chainService.sendMove(currentSessionIdRef.current, new Uint8Array([1]));
         if (result.txHash) setLastTxSig(result.txHash);
         setGameState(prev => ({ ...prev, message: 'STANDING...' }));
+        // NOTE: Do NOT clear isPendingRef here - wait for the event
+        console.log('[bjStand] Move sent successfully, waiting for chain event...');
         return;
       } catch (error) {
         console.error('[useTerminalGame] Stand failed:', error);
         setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+        // Only clear isPending on error, not on success
+        isPendingRef.current = false;
         return;
       }
     }
@@ -1518,17 +2060,29 @@ export const useTerminalGame = () => {
   };
 
   const bjDouble = async () => {
+    // Prevent double-submission
+    if (isPendingRef.current) {
+      console.log('[bjDouble] Blocked - transaction already pending');
+      return;
+    }
+
     // If on-chain mode, submit move
     if (isOnChain && chainService && currentSessionIdRef.current) {
       try {
+        isPendingRef.current = true;
+        console.log('[bjDouble] Set isPending = true, sending move...');
         // Payload: [2] for Double
         const result = await chainService.sendMove(currentSessionIdRef.current, new Uint8Array([2]));
         if (result.txHash) setLastTxSig(result.txHash);
         setGameState(prev => ({ ...prev, message: 'DOUBLING...' }));
+        // NOTE: Do NOT clear isPendingRef here - wait for the event
+        console.log('[bjDouble] Move sent successfully, waiting for chain event...');
         return;
       } catch (error) {
         console.error('[useTerminalGame] Double failed:', error);
         setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+        // Only clear isPending on error, not on success
+        isPendingRef.current = false;
         return;
       }
     }
@@ -1556,8 +2110,52 @@ export const useTerminalGame = () => {
     }
   };
 
-  const bjSplit = () => {
-    if (gameState.playerCards.length !== 2 || gameState.playerCards[0].rank !== gameState.playerCards[1].rank || stats.chips < gameState.bet) return;
+  const bjSplit = async () => {
+    // Validate split is possible before attempting
+    if (gameState.stage !== 'PLAYING') {
+      console.log('[useTerminalGame] Split rejected - not in PLAYING stage');
+      return;
+    }
+    if (gameState.playerCards.length !== 2) {
+      console.log('[useTerminalGame] Split rejected - not 2 cards:', gameState.playerCards.length);
+      setGameState(prev => ({ ...prev, message: 'CANNOT SPLIT' }));
+      return;
+    }
+    if (gameState.playerCards[0].rank !== gameState.playerCards[1].rank) {
+      console.log('[useTerminalGame] Split rejected - ranks do not match:', gameState.playerCards[0].rank, gameState.playerCards[1].rank);
+      setGameState(prev => ({ ...prev, message: 'CARDS MUST MATCH TO SPLIT' }));
+      return;
+    }
+    if (stats.chips < gameState.bet) {
+      console.log('[useTerminalGame] Split rejected - insufficient chips');
+      setGameState(prev => ({ ...prev, message: 'INSUFFICIENT FUNDS TO SPLIT' }));
+      return;
+    }
+
+    // If on-chain mode, submit move
+    if (isOnChain && chainService && currentSessionIdRef.current) {
+      try {
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Split blocked - transaction pending');
+          return;
+        }
+        isPendingRef.current = true;
+        console.log('[useTerminalGame] Sending split command to chain');
+        // Payload: [3] for Split
+        const result = await chainService.sendMove(currentSessionIdRef.current, new Uint8Array([3]));
+        if (result.txHash) setLastTxSig(result.txHash);
+        setGameState(prev => ({ ...prev, message: 'SPLITTING...' }));
+        // NOTE: isPendingRef will be cleared by CasinoGameMoved handler
+        return;
+      } catch (error) {
+        console.error('[useTerminalGame] Split failed:', error);
+        isPendingRef.current = false;
+        setGameState(prev => ({ ...prev, message: 'SPLIT FAILED' }));
+        return;
+      }
+    }
+
+    // Local mode fallback
     setGameState(prev => ({
         ...prev,
         playerCards: [gameState.playerCards[0], deck.pop()!],
@@ -1604,12 +2202,14 @@ export const useTerminalGame = () => {
         ...prev,
         history: [...prev.history, msg],
         pnlByGame: { ...prev.pnlByGame, ...pnlEntry },
-        pnlHistory: [...prev.pnlHistory, (prev.pnlHistory[prev.pnlHistory.length - 1] || 0) + finalWin]
+        pnlHistory: [...prev.pnlHistory, (prev.pnlHistory[prev.pnlHistory.length - 1] || 0) + finalWin].slice(-MAX_GRAPH_POINTS)
       }));
       setGameState(prev => ({ ...prev, message: finalWin >= 0 ? `WON ${finalWin}` : `LOST ${Math.abs(finalWin)}`, stage: 'RESULT', lastResult: finalWin }));
   };
 
   const bjInsurance = (take: boolean) => {
+      // Insurance not supported on chain
+      if (isOnChain) return;
       if (take && stats.chips >= Math.floor(gameState.bet/2)) setGameState(prev => ({ ...prev, insuranceBet: Math.floor(prev.bet/2), message: "INSURANCE TAKEN" }));
       else setGameState(prev => ({ ...prev, message: "INSURANCE DECLINED" }));
   };
@@ -1629,6 +2229,12 @@ export const useTerminalGame = () => {
 
       // Baccarat: needs bets + deal move (stage will be PLAYING after GameStarted)
       if (gameState.type === GameType.BACCARAT && gameState.stage === 'PLAYING' && gameState.playerCards.length === 0) {
+        // Guard against duplicate submissions
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Baccarat manual deal blocked - transaction pending');
+          return;
+        }
+        isPendingRef.current = true;
         try {
           // Get all bets to place
           const betsToPlace = getBaccaratBetsToPlace(gameState.baccaratSelection, gameState.baccaratBets, gameState.bet);
@@ -1648,25 +2254,38 @@ export const useTerminalGame = () => {
           const dealPayload = new Uint8Array([1]); // Action 1: Deal cards
           const result = await chainService.sendMove(sessionId, dealPayload);
           if (result.txHash) setLastTxSig(result.txHash);
+          // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
           return;
         } catch (error) {
           console.error('[useTerminalGame] Baccarat deal failed:', error);
           setGameState(prev => ({ ...prev, message: 'DEAL FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
           return;
         }
       }
 
       // Casino War: when cards are dealt (message='DEALT'), send confirm move to trigger result
       if (gameState.type === GameType.CASINO_WAR && gameState.stage === 'PLAYING' && gameState.message === 'DEALT') {
+        // Guard against duplicate submissions
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Casino War confirm blocked - transaction pending');
+          return;
+        }
+
+        isPendingRef.current = true;
         try {
           const payload = new Uint8Array([0]); // Confirm deal - triggers comparison
           const result = await chainService.sendMove(sessionId, payload);
           if (result.txHash) setLastTxSig(result.txHash);
           setGameState(prev => ({ ...prev, message: 'CONFIRMING...' }));
+          // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
           return;
         } catch (error) {
           console.error('[useTerminalGame] Casino War confirm failed:', error);
           setGameState(prev => ({ ...prev, message: 'CONFIRM FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
           return;
         }
       }
@@ -1710,7 +2329,8 @@ export const useTerminalGame = () => {
              bjDealerPlay([completed], [p1, p2], [d1, d2], newDeck);
         } else {
              let msg = "HIT (H) / STAND (S)";
-             if (d1.rank === 'A') msg = "INSURANCE? (I) / NO (N)";
+             // Only offer insurance in local mode, as backend does not support it
+             if (d1.rank === 'A' && !isOnChain) msg = "INSURANCE? (I) / NO (N)";
              setGameState(prev => ({ ...prev, stage: 'PLAYING', playerCards: [p1, p2], dealerCards: [d1, d2], message: msg, lastResult: 0, insuranceBet: 0, blackjackStack: [], completedHands: [] }));
         }
     } else if (gameState.type === GameType.HILO) {
@@ -1815,18 +2435,30 @@ export const useTerminalGame = () => {
   };
 
   const hiloPlay = async (guess: 'HIGHER' | 'LOWER') => {
+      // Prevent double-submission
+      if (isPendingRef.current) {
+        console.log('[hiloPlay] Blocked - transaction already pending');
+        return;
+      }
+
       // If on-chain mode, submit move
       if (isOnChain && chainService && currentSessionIdRef.current) {
         try {
+          isPendingRef.current = true;
+          console.log('[hiloPlay] Set isPending = true, sending move...');
           // Payload: [0] for Higher, [1] for Lower
           const payload = guess === 'HIGHER' ? new Uint8Array([0]) : new Uint8Array([1]);
           const result = await chainService.sendMove(currentSessionIdRef.current, payload);
           if (result.txHash) setLastTxSig(result.txHash);
           setGameState(prev => ({ ...prev, message: `GUESSING ${guess}...` }));
+          // NOTE: Do NOT clear isPendingRef here - wait for the event
+          console.log('[hiloPlay] Move sent successfully, waiting for chain event...');
           return;
         } catch (error) {
           console.error('[useTerminalGame] HiLo move failed:', error);
           setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
           return;
         }
       }
@@ -1843,25 +2475,37 @@ export const useTerminalGame = () => {
       const won = (guess === 'HIGHER' && nVal > cVal) || (guess === 'LOWER' && nVal < cVal);
       if (won) {
           // Simple doubling for demo, real calc is complex
-          const newAcc = Math.floor(gameState.hiloAccumulator * 1.5); 
-          setGameState(prev => ({ ...prev, playerCards: [...prev.playerCards, next], hiloAccumulator: newAcc, hiloGraphData: [...prev.hiloGraphData, newAcc], message: `CORRECT! POT: ${newAcc}` }));
+          const newAcc = Math.floor(gameState.hiloAccumulator * 1.5);
+          setGameState(prev => ({ ...prev, playerCards: [...prev.playerCards, next], hiloAccumulator: newAcc, hiloGraphData: [...prev.hiloGraphData, newAcc].slice(-MAX_GRAPH_POINTS), message: `CORRECT! POT: ${newAcc}` }));
       } else {
-          setGameState(prev => ({ ...prev, playerCards: [...prev.playerCards, next], hiloGraphData: [...prev.hiloGraphData, 0], stage: 'RESULT' }));
+          setGameState(prev => ({ ...prev, playerCards: [...prev.playerCards, next], hiloGraphData: [...prev.hiloGraphData, 0].slice(-MAX_GRAPH_POINTS), stage: 'RESULT' }));
           setGameState(prev => ({ ...prev, message: "WRONG", lastResult: -gameState.bet }));
       }
   };
   const hiloCashout = async () => {
+       // Prevent double-submission
+       if (isPendingRef.current) {
+         console.log('[hiloCashout] Blocked - transaction already pending');
+         return;
+       }
+
        // If on-chain mode, submit cashout
        if (isOnChain && chainService && currentSessionIdRef.current) {
          try {
+           isPendingRef.current = true;
+           console.log('[hiloCashout] Set isPending = true, sending move...');
            // Payload: [2] for Cashout
            const result = await chainService.sendMove(currentSessionIdRef.current, new Uint8Array([2]));
            if (result.txHash) setLastTxSig(result.txHash);
            setGameState(prev => ({ ...prev, message: 'CASHING OUT...' }));
+           // NOTE: Do NOT clear isPendingRef here - wait for the event
+           console.log('[hiloCashout] Move sent successfully, waiting for chain event...');
            return;
          } catch (error) {
            console.error('[useTerminalGame] Cashout failed:', error);
            setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+           // Only clear isPending on error, not on success
+           isPendingRef.current = false;
            return;
          }
        }
@@ -1971,9 +2615,10 @@ export const useTerminalGame = () => {
       }
 
       // If on-chain mode with no session, auto-start a new game
+      // Note: Don't set isPendingRef here - onGameStarted handler will handle it
+      // and auto-spin will be triggered there
       if (isOnChain && chainService && !currentSessionIdRef.current) {
         console.log('[useTerminalGame] spinRoulette - No active session, starting new roulette game');
-        isPendingRef.current = true;
         setGameState(prev => ({ ...prev, message: 'STARTING NEW SESSION...' }));
         startGame(GameType.ROULETTE);
         return;
@@ -2032,7 +2677,7 @@ export const useTerminalGame = () => {
           else if (b.type === 'ZERO' && num===0) win += b.amount * 35;
           else win -= b.amount;
       });
-      setGameState(prev => ({ ...prev, rouletteHistory: [...prev.rouletteHistory, num], rouletteLastRoundBets: prev.rouletteBets, rouletteBets: [], rouletteUndoStack: [] }));
+      setGameState(prev => ({ ...prev, rouletteHistory: [...prev.rouletteHistory, num].slice(-MAX_GRAPH_POINTS), rouletteLastRoundBets: prev.rouletteBets, rouletteBets: [], rouletteUndoStack: [] }));
       setGameState(prev => ({ ...prev, message: `SPUN ${num}`, lastResult: win }));
   };
 
@@ -2058,9 +2703,10 @@ export const useTerminalGame = () => {
        }
 
        // If on-chain mode with no session, auto-start a new game
+       // Note: Don't set isPendingRef here - onGameStarted handler will handle it
+       // and auto-roll will be triggered there
        if (isOnChain && chainService && !currentSessionIdRef.current) {
          console.log('[useTerminalGame] rollSicBo - No active session, starting new sic bo game');
-         isPendingRef.current = true;
          setGameState(prev => ({ ...prev, message: 'STARTING NEW SESSION...' }));
          startGame(GameType.SIC_BO);
          return;
@@ -2107,7 +2753,7 @@ export const useTerminalGame = () => {
        // Local mode fallback
        const d = [rollDie(), rollDie(), rollDie()];
        const win = calculateSicBoOutcomeExposure(d, gameState.sicBoBets); // reuse helper for actual calc
-       setGameState(prev => ({ ...prev, dice: d, sicBoHistory: [...prev.sicBoHistory, d], sicBoLastRoundBets: prev.sicBoBets, sicBoBets: [], sicBoUndoStack: [] }));
+       setGameState(prev => ({ ...prev, dice: d, sicBoHistory: [...prev.sicBoHistory, d].slice(-MAX_GRAPH_POINTS), sicBoLastRoundBets: prev.sicBoBets, sicBoBets: [], sicBoUndoStack: [] }));
        setGameState(prev => ({ ...prev, message: `ROLLED ${d.reduce((a,b)=>a+b,0)}`, lastResult: win }));
   };
 
@@ -2153,26 +2799,103 @@ export const useTerminalGame = () => {
   const placeCrapsBet = (type: CrapsBet['type'], target?: number) => {
       if (stats.chips < gameState.bet) return;
       let bets = [...gameState.crapsBets];
-      if (type === 'PASS') bets = bets.filter(b => b.type !== 'DONT_PASS');
-      if (type === 'DONT_PASS') bets = bets.filter(b => b.type !== 'PASS');
-      setGameState(prev => ({ ...prev, crapsUndoStack: [...prev.crapsUndoStack, prev.crapsBets], crapsBets: [...bets, { type, amount: prev.bet, target, status: (type==='COME'||type==='DONT_COME')?'PENDING':'ON' }], message: `BET ${type}`, crapsInputMode: 'NONE' }));
+      if (type === 'PASS') bets = bets.filter(b => b.type !== 'DONT_PASS' || !b.local);
+      if (type === 'DONT_PASS') bets = bets.filter(b => b.type !== 'PASS' || !b.local);
+      setGameState(prev => ({ ...prev, crapsUndoStack: [...prev.crapsUndoStack, prev.crapsBets], crapsBets: [...bets, { type, amount: prev.bet, target, status: (type==='COME'||type==='DONT_COME')?'PENDING':'ON', local: true }], message: `BET ${type}`, crapsInputMode: 'NONE' }));
   };
   const undoCrapsBet = () => {
        if (gameState.crapsUndoStack.length === 0) return;
        setGameState(prev => ({ ...prev, crapsBets: prev.crapsUndoStack[prev.crapsUndoStack.length-1], crapsUndoStack: prev.crapsUndoStack.slice(0, -1) }));
   };
-  const addCrapsOdds = () => {
-      // Logic same as App.tsx
+  const rebetCraps = () => {
+      if (gameState.crapsLastRoundBets.length === 0) {
+          setGameState(prev => ({ ...prev, message: 'NO PREVIOUS BETS' }));
+          return;
+      }
+      const totalRequired = gameState.crapsLastRoundBets.reduce((a, b) => a + b.amount + (b.oddsAmount || 0), 0);
+      if (stats.chips < totalRequired) {
+          setGameState(prev => ({ ...prev, message: 'INSUFFICIENT FUNDS' }));
+          return;
+      }
+      // Add last round bets as new local bets
+      const rebets = gameState.crapsLastRoundBets.map(b => ({ ...b, local: true }));
+      setGameState(prev => ({
+          ...prev,
+          crapsUndoStack: [...prev.crapsUndoStack, prev.crapsBets],
+          crapsBets: [...prev.crapsBets, ...rebets],
+          message: 'REBET PLACED'
+      }));
+  };
+  const addCrapsOdds = async () => {
+      // Find eligible bet (PASS, DONT_PASS, COME with status ON, DONT_COME with status ON)
+      const idx = gameState.crapsBets.findIndex(b =>
+          (b.type === 'PASS' || b.type === 'DONT_PASS' ||
+           (b.type === 'COME' && b.status === 'ON') ||
+           (b.type === 'DONT_COME' && b.status === 'ON'))
+      );
+
+      if (idx === -1) {
+          setGameState(prev => ({ ...prev, message: "NO BET FOR ODDS" }));
+          return;
+      }
+
+      const targetBet = gameState.crapsBets[idx];
+      const currentOdds = targetBet.oddsAmount || 0;
+      const maxOdds = targetBet.amount * 5; // 5x cap
+
+      if (currentOdds >= maxOdds) {
+          setGameState(prev => ({ ...prev, message: "MAX ODDS REACHED (5X)" }));
+          return;
+      }
+
+      // Cap the odds addition at 5x total
+      const oddsToAdd = Math.min(gameState.bet, maxOdds - currentOdds);
+
+      if (oddsToAdd <= 0) {
+          setGameState(prev => ({ ...prev, message: "MAX ODDS REACHED (5X)" }));
+          return;
+      }
+
+      if (stats.chips < oddsToAdd) {
+          setGameState(prev => ({ ...prev, message: "INSUFFICIENT FUNDS" }));
+          return;
+      }
+
+      // Update local state optimistically
       setGameState(prev => {
           const bets = [...prev.crapsBets];
-          // Find eligible bet and add odds... (simplified for brevity)
-          const idx = bets.findIndex(b => (b.type==='PASS'||b.type==='DONT_PASS'||(b.type==='COME'&&b.status==='ON')||(b.type==='DONT_COME'&&b.status==='ON')));
-          if (idx !== -1) {
-              bets[idx] = { ...bets[idx], oddsAmount: (bets[idx].oddsAmount||0) + prev.bet };
-              return { ...prev, crapsBets: bets, message: "ODDS ADDED" };
-          }
-          return { ...prev, message: "NO BET FOR ODDS" };
+          bets[idx] = { ...bets[idx], oddsAmount: currentOdds + oddsToAdd };
+          return { ...prev, crapsBets: bets, message: "ADDING ODDS..." };
       });
+
+      // Send to chain if we have an active session
+      if (chainService && currentSessionIdRef.current && !isPendingRef.current) {
+          isPendingRef.current = true;
+          try {
+              // Payload format: [1, amount_bytes...] - Add odds to last contract bet
+              const payload = new Uint8Array(9);
+              payload[0] = 1; // Command: Add odds
+              const view = new DataView(payload.buffer);
+              view.setBigUint64(1, BigInt(oddsToAdd), false); // big-endian
+
+              const result = await chainService.sendMove(currentSessionIdRef.current, payload);
+              if (result.txHash) setLastTxSig(result.txHash);
+
+              setGameState(prev => ({ ...prev, message: `ODDS +$${oddsToAdd}` }));
+          } catch (e) {
+              console.error('[addCrapsOdds] Failed to add odds:', e);
+              // Revert local state on failure
+              setGameState(prev => {
+                  const bets = [...prev.crapsBets];
+                  bets[idx] = { ...bets[idx], oddsAmount: currentOdds };
+                  return { ...prev, crapsBets: bets, message: "ODDS FAILED" };
+              });
+          } finally {
+              isPendingRef.current = false;
+          }
+      } else {
+          setGameState(prev => ({ ...prev, message: `ODDS +$${oddsToAdd}` }));
+      }
   };
   const placeCrapsNumberBet = (mode: string, num: number) => {
       // Map input mode to bet type
@@ -2188,6 +2911,21 @@ export const useTerminalGame = () => {
       placeCrapsBet(betType, num);
   };
   const rollCraps = async () => {
+       // Only place NEW bets that the user explicitly added this round (local: true)
+       // Bets from chain (local: false/undefined) should NOT be re-submitted
+       const newBetsToPlace = gameState.crapsBets.filter(b => b.local === true);
+
+       // Check if we have outstanding bets on-chain (any bet without local flag)
+       const hasOutstandingBets = gameState.crapsBets.some(b => !b.local) || gameState.crapsPoint !== null;
+
+       if (newBetsToPlace.length === 0 && !hasOutstandingBets) {
+         // No new bets AND no outstanding bets - need at least something to bet on
+         setGameState(prev => ({ ...prev, message: 'PLACE BET FIRST' }));
+         return;
+       }
+       // If newBetsToPlace.length > 0, place those new bets
+       // If hasOutstandingBets but no new bets, just roll without placing more
+
        // If on-chain mode with no session, auto-start a new game
        if (isOnChain && chainService && !currentSessionIdRef.current) {
          console.log('[useTerminalGame] rollCraps - No active session, starting new craps game');
@@ -2198,9 +2936,16 @@ export const useTerminalGame = () => {
 
        // If on-chain mode, submit roll move
        if (isOnChain && chainService && currentSessionIdRef.current) {
+         // Guard against duplicate submissions
+         if (isPendingRef.current) {
+           console.log('[useTerminalGame] Craps roll blocked - transaction pending');
+           return;
+         }
+
+         isPendingRef.current = true;
          try {
-           // First, place all pending bets on-chain
-           for (const bet of gameState.crapsBets) {
+           // Only place NEW bets that user explicitly added (not repeating previous bets)
+           for (const bet of newBetsToPlace) {
              const betPayload = serializeCrapsBet(bet);
              await chainService.sendMove(currentSessionIdRef.current, betPayload);
            }
@@ -2210,32 +2955,45 @@ export const useTerminalGame = () => {
            const result = await chainService.sendMove(currentSessionIdRef.current, rollPayload);
            if (result.txHash) setLastTxSig(result.txHash);
 
-           // Clear local bets since they're now on-chain
+           // Save new bets as last round (only if we placed any), then clear local bets
+           // Keep on-chain bets (chain state will refresh them anyway)
            setGameState(prev => ({
              ...prev,
-             crapsBets: [],
+             crapsLastRoundBets: newBetsToPlace.length > 0 ? newBetsToPlace : prev.crapsLastRoundBets,
+             crapsBets: prev.crapsBets.filter(b => !b.local),
              message: 'ROLLING DICE...'
            }));
            return;
+         // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
          } catch (error) {
            console.error('[useTerminalGame] Craps roll failed:', error);
            setGameState(prev => ({ ...prev, message: 'ROLL FAILED' }));
+           // Only clear isPending on error, not on success
+           isPendingRef.current = false;
            return;
          }
        }
 
        // Local mode fallback
        const d1=rollDie(), d2=rollDie(), total=d1+d2;
-       const pnl = calculateCrapsExposure(total, gameState.crapsPoint, gameState.crapsBets); // Reuse helper for PnL
+       const pnl = calculateCrapsExposure(total, gameState.crapsPoint, newBetsToPlace); // Use newBetsToPlace for PnL
        // Update point logic simplified
        let newPoint = gameState.crapsPoint;
        if (gameState.crapsPoint === null && [4,5,6,8,9,10].includes(total)) newPoint = total;
        else if (gameState.crapsPoint === total || total === 7) newPoint = null;
 
        // Reset roll history when 7 is rolled (seven-out), start fresh with the 7
-       const newHistory = total === 7 ? [total] : [...gameState.crapsRollHistory, total];
-       setGameState(prev => ({ ...prev, dice: [d1, d2], crapsPoint: newPoint, crapsRollHistory: newHistory, message: `ROLLED ${total}` }));
-       setGameState(prev => ({ ...prev, message: `ROLLED ${total}`, lastResult: pnl }));
+       const newHistory = total === 7 ? [total] : [...gameState.crapsRollHistory, total].slice(-MAX_GRAPH_POINTS);
+       setGameState(prev => ({
+         ...prev,
+         dice: [d1, d2],
+         crapsPoint: newPoint,
+         crapsRollHistory: newHistory,
+         crapsLastRoundBets: newBetsToPlace.length > 0 ? newBetsToPlace : prev.crapsLastRoundBets,
+         crapsBets: [],
+         message: `ROLLED ${total}`,
+         lastResult: pnl
+       }));
   };
 
   const baccaratActions = {
@@ -2310,6 +3068,13 @@ export const useTerminalGame = () => {
 
       // If on-chain mode, submit move
       if (isOnChain && chainService && currentSessionIdRef.current) {
+        // Guard against duplicate submissions
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Three Card Play blocked - transaction pending');
+          return;
+        }
+
+        isPendingRef.current = true;
         try {
           // Payload: [0] for Play
           const payload = new Uint8Array([0]);
@@ -2317,9 +3082,12 @@ export const useTerminalGame = () => {
           if (result.txHash) setLastTxSig(result.txHash);
           setGameState(prev => ({ ...prev, message: 'PLAYING...' }));
           return;
+        // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
         } catch (error) {
           console.error('[useTerminalGame] Three Card Play failed:', error);
           setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
           return;
         }
       }
@@ -2365,6 +3133,13 @@ export const useTerminalGame = () => {
 
       // If on-chain mode, submit move
       if (isOnChain && chainService && currentSessionIdRef.current) {
+        // Guard against duplicate submissions
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Three Card Fold blocked - transaction pending');
+          return;
+        }
+
+        isPendingRef.current = true;
         try {
           // Payload: [1] for Fold
           const payload = new Uint8Array([1]);
@@ -2372,9 +3147,12 @@ export const useTerminalGame = () => {
           if (result.txHash) setLastTxSig(result.txHash);
           setGameState(prev => ({ ...prev, message: 'FOLDING...' }));
           return;
+        // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
         } catch (error) {
           console.error('[useTerminalGame] Three Card Fold failed:', error);
           setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
           return;
         }
       }
@@ -2385,12 +3163,88 @@ export const useTerminalGame = () => {
       setGameState(prev => ({ ...prev, message: "FOLDED", lastResult: -gameState.bet }));
   };
 
+  // --- CASINO WAR ---
+  const casinoWarGoToWar = async () => {
+      // Check message contains 'WAR' to ensure we're in war state
+      if (gameState.type !== GameType.CASINO_WAR || gameState.stage !== 'PLAYING' || !gameState.message.includes('WAR')) return;
+
+      // If on-chain mode, submit move
+      if (isOnChain && chainService && currentSessionIdRef.current) {
+        // Guard against duplicate submissions
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Casino War Go To War blocked - transaction pending');
+          return;
+        }
+
+        isPendingRef.current = true;
+        try {
+          // Payload: [1] for Go to War
+          const payload = new Uint8Array([1]);
+          const result = await chainService.sendMove(currentSessionIdRef.current, payload);
+          if (result.txHash) setLastTxSig(result.txHash);
+          setGameState(prev => ({ ...prev, message: 'GOING TO WAR...' }));
+          return;
+        // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
+        } catch (error) {
+          console.error('[useTerminalGame] Casino War Go To War failed:', error);
+          setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
+          return;
+        }
+      }
+
+      // Local mode fallback - not fully implemented, just show result
+      setGameState(prev => ({ ...prev, message: 'WAR NOT SUPPORTED IN LOCAL MODE' }));
+  };
+
+  const casinoWarSurrender = async () => {
+      // Check message contains 'WAR' to ensure we're in war state
+      if (gameState.type !== GameType.CASINO_WAR || gameState.stage !== 'PLAYING' || !gameState.message.includes('WAR')) return;
+
+      // If on-chain mode, submit move
+      if (isOnChain && chainService && currentSessionIdRef.current) {
+        // Guard against duplicate submissions
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Casino War Surrender blocked - transaction pending');
+          return;
+        }
+
+        isPendingRef.current = true;
+        try {
+          // Payload: [2] for Surrender
+          const payload = new Uint8Array([2]);
+          const result = await chainService.sendMove(currentSessionIdRef.current, payload);
+          if (result.txHash) setLastTxSig(result.txHash);
+          setGameState(prev => ({ ...prev, message: 'SURRENDERING...' }));
+          return;
+        // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
+        } catch (error) {
+          console.error('[useTerminalGame] Casino War Surrender failed:', error);
+          setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
+          return;
+        }
+      }
+
+      // Local mode fallback - lose half bet
+      setGameState(prev => ({ ...prev, stage: 'RESULT', message: 'SURRENDERED', lastResult: -Math.floor(gameState.bet / 2) }));
+  };
+
   // --- ULTIMATE HOLDEM ---
   const uhCheck = async () => {
       if (gameState.type !== GameType.ULTIMATE_HOLDEM || gameState.stage !== 'PLAYING') return;
 
       // If on-chain mode, submit move
       if (isOnChain && chainService && currentSessionIdRef.current) {
+        // Guard against duplicate submissions
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Ultimate Holdem Check blocked - transaction pending');
+          return;
+        }
+
+        isPendingRef.current = true;
         try {
           // Payload: [0] for Check
           const payload = new Uint8Array([0]);
@@ -2398,9 +3252,12 @@ export const useTerminalGame = () => {
           if (result.txHash) setLastTxSig(result.txHash);
           setGameState(prev => ({ ...prev, message: 'CHECKING...' }));
           return;
+        // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
         } catch (error) {
           console.error('[useTerminalGame] Ultimate Holdem Check failed:', error);
           setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
           return;
         }
       }
@@ -2432,6 +3289,13 @@ export const useTerminalGame = () => {
 
       // If on-chain mode, submit move
       if (isOnChain && chainService && currentSessionIdRef.current) {
+        // Guard against duplicate submissions
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Ultimate Holdem Bet blocked - transaction pending');
+          return;
+        }
+
+        isPendingRef.current = true;
         try {
           // Payload: [1] for Bet4x, [2] for Bet2x, [3] for Bet1x
           let payload: Uint8Array;
@@ -2450,9 +3314,12 @@ export const useTerminalGame = () => {
           if (result.txHash) setLastTxSig(result.txHash);
           setGameState(prev => ({ ...prev, message: `BETTING ${multiplier}X...` }));
           return;
+        // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
         } catch (error) {
           console.error('[useTerminalGame] Ultimate Holdem Bet failed:', error);
           setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
           return;
         }
       }
@@ -2512,6 +3379,13 @@ export const useTerminalGame = () => {
 
       // If on-chain mode, submit move
       if (isOnChain && chainService && currentSessionIdRef.current) {
+        // Guard against duplicate submissions
+        if (isPendingRef.current) {
+          console.log('[useTerminalGame] Ultimate Holdem Fold blocked - transaction pending');
+          return;
+        }
+
+        isPendingRef.current = true;
         try {
           // Payload: [4] for Fold
           const payload = new Uint8Array([4]);
@@ -2519,9 +3393,12 @@ export const useTerminalGame = () => {
           if (result.txHash) setLastTxSig(result.txHash);
           setGameState(prev => ({ ...prev, message: 'FOLDING...' }));
           return;
+        // NOTE: Do NOT clear isPendingRef here - wait for CasinoGameMoved event
         } catch (error) {
           console.error('[useTerminalGame] Ultimate Holdem Fold failed:', error);
           setGameState(prev => ({ ...prev, message: 'MOVE FAILED' }));
+          // Only clear isPending on error, not on success
+          isPendingRef.current = false;
           return;
         }
       }
@@ -2552,15 +3429,23 @@ export const useTerminalGame = () => {
           try {
             const playerState = await clientRef.current!.getCasinoPlayer(publicKeyBytesRef.current!);
             if (playerState) {
+              // Check if we should respect WebSocket update cooldown
+              const timeSinceLastUpdate = Date.now() - lastBalanceUpdateRef.current;
+              const shouldUpdateBalance = timeSinceLastUpdate > BALANCE_UPDATE_COOLDOWN;
+
               setStats(prev => ({
                 ...prev,
-                chips: playerState.chips,
+                chips: shouldUpdateBalance ? playerState.chips : prev.chips,
                 shields: playerState.shields,
                 doubles: playerState.doubles,
                 history: [],
                 pnlByGame: {},
                 pnlHistory: []
               }));
+
+              if (!shouldUpdateBalance) {
+                console.log('[useTerminalGame] Skipped balance update from reset game polling (within cooldown)');
+              }
             }
           } catch (e) {
             console.warn('[useTerminalGame] Failed to fetch player state after registration:', e);
@@ -2573,16 +3458,75 @@ export const useTerminalGame = () => {
   const startTournament = async () => {
     if (isTournamentStarting) return;
 
+    const client = clientRef.current;
+    if (!client) {
+      console.error('[useTerminalGame] Cannot start tournament - client not initialized');
+      return;
+    }
+
     setIsTournamentStarting(true);
     console.log(`[useTerminalGame] Starting manual tournament${botConfig.enabled ? ` with ${botConfig.numBots} bots` : ' (solo mode)'}...`);
+
+    // Calculate tournament times
+    const TOURNAMENT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+    const CURRENT_TOURNAMENT_ID = 1;
+    const startTimeMs = Date.now();
+    const endTimeMs = startTimeMs + TOURNAMENT_DURATION_MS;
+
+    // Send on-chain CasinoStartTournament transaction
+    // This will create a fresh tournament and automatically add the starting player
+    try {
+      const nonce = await client.nonceManager.getNextNonce();
+      const txBytes = client.wasm.createCasinoStartTournamentTransaction(
+        nonce,
+        CURRENT_TOURNAMENT_ID,
+        startTimeMs,
+        endTimeMs
+      );
+      await client.submitTransaction(txBytes);
+      console.log('[useTerminalGame] CasinoStartTournament transaction submitted');
+    } catch (e) {
+      console.error('[useTerminalGame] Failed to submit CasinoStartTournament transaction:', e);
+      // Continue anyway - the local state will still work
+    }
 
     // Force phase to ACTIVE
     setPhase('ACTIVE');
 
-    // Set end time for 5 minutes from now
-    const endTime = Date.now() + 5 * 60 * 1000;
-    setManualTournamentEndTime(endTime);
+    // Set end time for 5 minutes from now (synced with on-chain)
+    setManualTournamentEndTime(endTimeMs);
     setTournamentTime(5 * 60);
+
+    // Reset local player chips to starting values immediately
+    setStats(prev => ({
+      ...prev,
+      chips: INITIAL_CHIPS,
+      shields: INITIAL_SHIELDS,
+      doubles: INITIAL_DOUBLES,
+      history: [],
+      pnlByGame: {},
+      pnlHistory: []
+    }));
+
+    // After a delay, fetch player state from chain to ensure sync
+    if (publicKeyBytesRef.current) {
+      setTimeout(async () => {
+        try {
+          const playerState = await client.getCasinoPlayer(publicKeyBytesRef.current!);
+          if (playerState) {
+            console.log('[useTerminalGame] Tournament started, syncing player state from chain:', playerState);
+            setStats(prev => ({
+              ...prev,
+              chips: playerState.chips,
+              shields: playerState.shields,
+              doubles: playerState.doubles,
+            }));
+          }
+        } catch (e) {
+          console.warn('[useTerminalGame] Failed to sync player state after tournament start:', e);
+        }
+      }, 1000);
+    }
 
     // Start the bots if enabled
     if (botConfig.enabled) {
@@ -2651,12 +3595,16 @@ export const useTerminalGame = () => {
         placeCrapsBet,
         placeCrapsNumberBet,
         undoCrapsBet,
+        rebetCraps,
         addCrapsOdds,
         // Baccarat
         baccaratActions,
         // Three Card Poker
         threeCardPlay,
         threeCardFold,
+        // Casino War
+        casinoWarGoToWar,
+        casinoWarSurrender,
         // Ultimate Holdem
         uhCheck,
         uhBet,

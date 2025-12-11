@@ -3,10 +3,19 @@ import React from 'react';
 import { Card, Suit } from '../../types';
 
 export const CardRender: React.FC<{ card: Card; small?: boolean; forcedColor?: string }> = ({ card, small, forcedColor }) => {
+  // Defensive check for missing card data
+  if (!card) {
+    return (
+      <div className={`${small ? 'w-8 h-12' : 'w-16 h-24'} bg-terminal-dim border border-gray-600 rounded flex items-center justify-center`}>
+        <span className="text-gray-500 opacity-50 text-xs">?</span>
+      </div>
+    );
+  }
+
   if (card.isHidden) {
     return (
-      <div className={`${small ? 'w-8 h-12' : 'w-16 h-24'} bg-terminal-dim border border-terminal-green rounded flex items-center justify-center`}>
-        <span className="text-terminal-green opacity-50 text-xs">///</span>
+      <div className={`${small ? 'w-8 h-12' : 'w-16 h-24'} bg-terminal-dim border border-gray-600 rounded flex items-center justify-center`}>
+        <span className="text-gray-500 opacity-50 text-xs">///</span>
       </div>
     );
   }
@@ -17,9 +26,9 @@ export const CardRender: React.FC<{ card: Card; small?: boolean; forcedColor?: s
 
   return (
     <div className={`${small ? 'w-8 h-12 text-sm' : 'w-16 h-24 text-xl'} bg-terminal-black border border-current rounded flex flex-col items-center justify-between p-1 ${colorClass} shadow-[0_0_10px_rgba(0,255,65,0.1)]`}>
-      <div className="self-start leading-none">{card.rank}</div>
-      <div className="text-2xl">{card.suit}</div>
-      <div className="self-end leading-none rotate-180">{card.rank}</div>
+      <div className="self-start leading-none">{card.rank || '?'}</div>
+      <div className="text-2xl">{card.suit || '?'}</div>
+      <div className="self-end leading-none rotate-180">{card.rank || '?'}</div>
     </div>
   );
 };

@@ -15,16 +15,15 @@ export const BlackjackView = React.memo<{ gameState: GameState }>(({ gameState }
                 <div className="min-h-[120px] flex items-center justify-center opacity-75">
                     {gameState.dealerCards.length > 0 ? (
                         <div className="flex flex-col items-center gap-2">
-                            <span className="text-lg font-bold tracking-widest text-terminal-accent">DEALER</span>
+                            <span className="text-sm font-bold tracking-widest text-white">DEALER <span className="text-white">({dealerValue})</span></span>
                             <Hand
                                 cards={gameState.dealerCards}
-                                title={`(${dealerValue})`}
                                 forcedColor="text-terminal-accent"
                             />
                         </div>
                     ) : (
                         <div className="flex flex-col items-center gap-2">
-                             <span className="text-lg font-bold tracking-widest text-terminal-accent">DEALER</span>
+                             <span className="text-sm font-bold tracking-widest text-white">DEALER</span>
                              <div className="w-16 h-24 border border-dashed border-terminal-accent rounded" />
                         </div>
                     )}
@@ -32,7 +31,7 @@ export const BlackjackView = React.memo<{ gameState: GameState }>(({ gameState }
 
                 {/* Center Info */}
                 <div className="text-center space-y-3 relative z-20">
-                        <div className="text-2xl font-bold text-white tracking-widest animate-pulse">
+                        <div className="text-2xl font-bold text-terminal-gold tracking-widest">
                             {gameState.message}
                         </div>
                 </div>
@@ -47,11 +46,10 @@ export const BlackjackView = React.memo<{ gameState: GameState }>(({ gameState }
                     )}
 
                     <div className="flex flex-col items-center gap-2 scale-110 transition-transform">
-                        <span className="text-lg font-bold tracking-widest text-terminal-green">YOU</span>
+                        <span className="text-sm font-bold tracking-widest text-white">YOU <span className="text-white">({playerValue})</span></span>
                         {gameState.playerCards.length > 0 ? (
                              <Hand
                                 cards={gameState.playerCards}
-                                title={`(${playerValue})`}
                                 forcedColor="text-terminal-green"
                             />
                         ) : (

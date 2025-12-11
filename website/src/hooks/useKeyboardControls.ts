@@ -42,6 +42,8 @@ interface KeyboardControlsProps {
     undoRouletteBet: () => void;
     threeCardPlay: () => void;
     threeCardFold: () => void;
+    casinoWarGoToWar: () => void;
+    casinoWarSurrender: () => void;
     uhCheck: () => void;
     uhFold: () => void;
     uhBet: (multiplier: number) => void;
@@ -49,6 +51,7 @@ interface KeyboardControlsProps {
     placeCrapsNumberBet: (inputMode: string, number: number) => void;
     addCrapsOdds: () => void;
     undoCrapsBet: () => void;
+    rebetCraps: () => void;
     placeSicBoBet: (betType: string, target?: number) => void;
     rebetSicBo: () => void;
     undoSicBoBet: () => void;
@@ -198,6 +201,9 @@ export const useKeyboardControls = ({
             } else if (gameState.type === GameType.THREE_CARD) {
                 if (k === 'p') gameActions.threeCardPlay();
                 if (k === 'f') gameActions.threeCardFold();
+            } else if (gameState.type === GameType.CASINO_WAR) {
+                if (k === 'w') gameActions.casinoWarGoToWar();
+                if (k === 's') gameActions.casinoWarSurrender();
             } else if (gameState.type === GameType.ULTIMATE_HOLDEM) {
                 if (k === 'c') gameActions.uhCheck();
                 if (k === 'f') gameActions.uhFold();
@@ -231,6 +237,7 @@ export const useKeyboardControls = ({
                 if (k === 'f') gameActions.placeCrapsBet('FIELD');
                 if (k === 'o') gameActions.addCrapsOdds();
                 if (k === 'u') gameActions.undoCrapsBet();
+                if (k === 't') gameActions.rebetCraps();
                 if (k === 'y') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'YES' }));
                 if (k === 'n') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'NO' }));
                 if (k === 'x') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'NEXT' }));

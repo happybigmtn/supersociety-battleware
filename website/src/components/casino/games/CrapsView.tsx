@@ -19,24 +19,26 @@ export const CrapsView = React.memo<{ gameState: GameState }>(({ gameState }) =>
         [gameState.crapsBets]
     );
 
+    // Determine point circle color based on pass/don't pass bet
+    const pointColor = useMemo(() => {
+        const hasPassBet = gameState.crapsBets.some(b => b.type === 'PASS');
+        const hasDontPassBet = gameState.crapsBets.some(b => b.type === 'DONT_PASS');
+        if (hasPassBet) return 'border-terminal-green text-terminal-green';
+        if (hasDontPassBet) return 'border-terminal-accent text-terminal-accent';
+        return 'border-gray-700 text-gray-700';
+    }, [gameState.crapsBets]);
+
     return (
         <>
-            <div className="flex-1 w-full flex flex-col items-center justify-center gap-8 relative z-10 pb-20">
+            <div className="flex-1 w-full flex flex-col items-center justify-center gap-6 relative z-10 pb-20">
                 <h1 className="absolute top-0 text-xl font-bold text-gray-500 tracking-widest uppercase">CRAPS</h1>
-                {/* Point and Established Bets Row */}
-                <div className="min-h-[120px] flex items-center justify-center gap-4">
-                        {/* Point Indicator */}
-                        <div className="flex flex-col items-center gap-2">
-                            <span className="text-xs uppercase tracking-widest text-gray-500">POINT</span>
-                            <div className={`w-16 h-16 border-2 flex items-center justify-center text-xl font-bold rounded-full shadow-[0_0_15px_rgba(0,0,0,0.5)] ${gameState.crapsPoint ? 'border-terminal-accent text-terminal-accent' : 'border-gray-700 text-gray-700'}`}>
-                                {gameState.crapsPoint || "OFF"}
-                            </div>
-                        </div>
 
-                        {/* Established Come/Don't Come Bets */}
+                {/* Established Come/Don't Come Bets - Above Point, Horizontally Centered */}
+                {establishedComeBets.length > 0 && (
+                    <div className="flex items-center justify-center gap-4">
                         {establishedComeBets.map((bet, i) => (
-                            <div key={i} className="flex flex-col items-center gap-2">
-                                <span className={`text-xs uppercase tracking-widest ${bet.type === 'COME' ? 'text-terminal-green' : 'text-terminal-accent'}`}>
+                            <div key={i} className="flex flex-col items-center gap-1">
+                                <span className={`text-[10px] uppercase tracking-widest ${bet.type === 'COME' ? 'text-terminal-green' : 'text-terminal-accent'}`}>
                                     {bet.type === 'COME' ? 'COME' : "DON'T"}
                                 </span>
                                 <div className={`w-12 h-12 border-2 flex items-center justify-center text-lg font-bold rounded-full shadow-[0_0_10px_rgba(0,0,0,0.5)] ${
@@ -44,14 +46,23 @@ export const CrapsView = React.memo<{ gameState: GameState }>(({ gameState }) =>
                                 }`}>
                                     {bet.target}
                                 </div>
-                                <span className="text-[10px] text-gray-500">${bet.amount}{bet.oddsAmount ? `+${bet.oddsAmount}` : ''}</span>
+                                <span className="text-[9px] text-gray-500">${bet.amount}{bet.oddsAmount ? `+${bet.oddsAmount}` : ''}</span>
                             </div>
                         ))}
+                    </div>
+                )}
+
+                {/* Point Indicator - Centered */}
+                <div className="flex flex-col items-center gap-2">
+                    <span className="text-xs uppercase tracking-widest text-gray-500">POINT</span>
+                    <div className={`w-20 h-20 border-2 flex items-center justify-center text-2xl font-bold rounded-full shadow-[0_0_15px_rgba(0,0,0,0.5)] ${gameState.crapsPoint ? pointColor : 'border-gray-700 text-gray-700'}`}>
+                        {gameState.crapsPoint || "OFF"}
+                    </div>
                 </div>
 
                 {/* Center Info */}
                 <div className="text-center space-y-3 relative z-20">
-                    <div className="text-2xl font-bold text-white tracking-widest animate-pulse">
+                    <div className="text-2xl font-bold text-terminal-gold tracking-widest animate-pulse">
                         {gameState.message}
                     </div>
                     {gameState.crapsRollHistory.length > 0 && (

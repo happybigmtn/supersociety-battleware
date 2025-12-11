@@ -761,7 +761,7 @@ impl CasinoGame for Craps {
                 });
 
                 session.state_blob = state.to_blob();
-                Ok(GameResult::Continue)
+                Ok(GameResult::ContinueWithUpdate { payout: -(amount as i64) })
             }
 
             // [1, amount_bytes...] - Add odds to last contract bet
@@ -792,7 +792,7 @@ impl CasinoGame for Craps {
                 }
 
                 session.state_blob = state.to_blob();
-                Ok(GameResult::Continue)
+                Ok(GameResult::ContinueWithUpdate { payout: -(odds_amount as i64) })
             }
 
             // [2] - Roll dice

@@ -38,7 +38,7 @@ export const BaccaratView = React.memo<{ gameState: GameState }>(({ gameState })
                         />
                     ) : (
                         <div className="flex flex-col gap-2 items-center">
-                            <span className={`text-lg font-bold tracking-widest ${bankerColor}`}>BANKER</span>
+                            <span className={`text-2xl font-bold tracking-widest ${bankerColor}`}>BANKER</span>
                             <div className={`w-16 h-24 border border-dashed rounded flex items-center justify-center ${bankerColor.replace('text-', 'border-')}`}>?</div>
                         </div>
                     )}
@@ -46,7 +46,7 @@ export const BaccaratView = React.memo<{ gameState: GameState }>(({ gameState })
 
                 {/* Center Info */}
                 <div className="text-center space-y-3 relative z-20 py-4">
-                     <div className="text-2xl font-bold text-white tracking-widest animate-pulse">
+                     <div className="text-2xl font-bold text-terminal-gold tracking-widest animate-pulse">
                          {gameState.message}
                      </div>
                 </div>
@@ -61,7 +61,7 @@ export const BaccaratView = React.memo<{ gameState: GameState }>(({ gameState })
                         />
                     ) : (
                         <div className="flex flex-col gap-2 items-center">
-                            <span className={`text-lg font-bold tracking-widest ${playerColor}`}>PLAYER</span>
+                            <span className={`text-2xl font-bold tracking-widest ${playerColor}`}>PLAYER</span>
                             <div className={`w-16 h-24 border border-dashed rounded flex items-center justify-center ${playerColor.replace('text-', 'border-')}`}>?</div>
                         </div>
                     )}

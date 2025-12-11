@@ -73,7 +73,7 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({
                       <div className="grid grid-cols-2 gap-2 sm:gap-4 text-sm">
                            <div className="bg-gray-900 p-2 sm:p-4 rounded border border-gray-800">
                                <div className="text-gray-500 text-[10px] sm:text-xs mb-1">FINAL CHIPS</div>
-                               <div className="text-lg sm:text-xl md:text-2xl text-terminal-gold font-bold">${stats.chips.toLocaleString()}</div>
+                               <div className="text-lg sm:text-xl md:text-2xl text-white font-bold">${stats.chips.toLocaleString()}</div>
                            </div>
                            <div className="bg-gray-900 p-2 sm:p-4 rounded border border-gray-800">
                                <div className="text-gray-500 text-[10px] sm:text-xs mb-1">FINAL RANK</div>

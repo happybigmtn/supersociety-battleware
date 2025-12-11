@@ -153,6 +153,11 @@ impl BaccaratState {
         let bet_count = blob[offset] as usize;
         offset += 1;
 
+        // Validate bet count against maximum to prevent DoS via large allocations
+        if bet_count > MAX_BETS {
+            return None;
+        }
+
         let mut bets = Vec::with_capacity(bet_count);
         for _ in 0..bet_count {
             if offset + 9 > blob.len() {
@@ -363,7 +368,7 @@ impl CasinoGame for Baccarat {
                 }
 
                 session.state_blob = state.to_blob();
-                Ok(GameResult::Continue)
+                Ok(GameResult::ContinueWithUpdate { payout: -(amount as i64) })
             }
 
             // [1] - Deal cards and resolve all bets
@@ -461,9 +466,11 @@ impl CasinoGame for Baccarat {
                         .unwrap_or(0);
                     if loss_amount == 0 {
                         // Overflow case - treat as total loss
-                        GameResult::Loss
+                        // Use LossPreDeducted to report actual loss (chips already deducted via ContinueWithUpdate)
+                        GameResult::LossPreDeducted(total_wagered)
                     } else if loss_amount >= total_wagered {
-                        GameResult::Loss
+                        // Total loss - use LossPreDeducted to report actual amount
+                        GameResult::LossPreDeducted(total_wagered)
                     } else {
                         // Partial loss - return remaining stake
                         let remaining = total_wagered.saturating_sub(loss_amount);

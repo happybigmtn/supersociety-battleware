@@ -78,19 +78,36 @@ impl Simulator {
 
 impl Simulator {
     pub fn submit_seed(&self, seed: Seed) {
-        let mut state = self.state.write().unwrap();
+        let mut state = match self.state.write() {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::error!("Failed to acquire write lock in submit_seed: {}", e);
+                return;
+            }
+        };
         if state.seeds.insert(seed.view(), seed.clone()).is_some() {
             return;
         }
-        let _ = self.update_tx.send(InternalUpdate::Seed(seed));
+        drop(state); // Release lock before broadcasting
+        if let Err(e) = self.update_tx.send(InternalUpdate::Seed(seed)) {
+            tracing::warn!("Failed to broadcast seed update (no subscribers): {}", e);
+        }
     }
 
     pub fn submit_transactions(&self, transactions: Vec<Transaction>) {
-        let _ = self.mempool_tx.send(Pending { transactions });
+        if let Err(e) = self.mempool_tx.send(Pending { transactions }) {
+            tracing::warn!("Failed to broadcast transactions (no subscribers): {}", e);
+        }
     }
 
     pub fn submit_state(&self, summary: Summary, inner: Vec<(u64, Digest)>) {
-        let mut state = self.state.write().unwrap();
+        let mut state = match self.state.write() {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::error!("Failed to acquire write lock in submit_state: {}", e);
+                return;
+            }
+        };
         if !state.submitted_state.insert(summary.progress.height) {
             return;
         }
@@ -135,14 +152,24 @@ impl Simulator {
     }
 
     pub fn submit_events(&self, summary: Summary, events_digests: Vec<(u64, Digest)>) {
-        let mut state = self.state.write().unwrap();
         let height = summary.progress.height;
-        if !state.submitted_events.insert(height) {
-            return;
-        }
+
+        // Check if already submitted before acquiring lock
+        {
+            let mut state = match self.state.write() {
+                Ok(state) => state,
+                Err(e) => {
+                    tracing::error!("Failed to acquire write lock in submit_events: {}", e);
+                    return;
+                }
+            };
+            if !state.submitted_events.insert(height) {
+                return;
+            }
+        } // Release lock before broadcasting
 
         // Broadcast events with digests for efficient filtering
-        let _ = self.update_tx.send(InternalUpdate::Events(
+        if let Err(e) = self.update_tx.send(InternalUpdate::Events(
             Events {
                 progress: summary.progress,
                 certificate: summary.certificate,
@@ -150,11 +177,19 @@ impl Simulator {
                 events_proof_ops: summary.events_proof_ops,
             },
             events_digests,
-        ));
+        )) {
+            tracing::warn!("Failed to broadcast events update (no subscribers): {}", e);
+        }
     }
 
     pub fn query_state(&self, key: &Digest) -> Option<Lookup> {
-        let state = self.state.read().unwrap();
+        let state = match self.state.read() {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::error!("Failed to acquire read lock in query_state: {}", e);
+                return None;
+            }
+        };
         let (height, operation) = state.keys.get(key)?.last_key_value()?;
         let (loc, Variable::Update(_, value)) = operation else {
             return None;
@@ -168,8 +203,18 @@ impl Simulator {
             digests_required_for_proof::<Digest>(progress.state_end_op, *loc, *loc);
         let required_digests = required_digest_positions
             .iter()
-            .map(|pos| state.nodes.get(pos).cloned().unwrap())
+            .filter_map(|pos| state.nodes.get(pos).cloned())
             .collect::<Vec<_>>();
+
+        // Verify we got all required digests
+        if required_digests.len() != required_digest_positions.len() {
+            tracing::error!(
+                "Missing node digests: expected {}, got {}",
+                required_digest_positions.len(),
+                required_digests.len()
+            );
+            return None;
+        }
 
         // Construct proof
         let proof = create_proof(progress.state_end_op, required_digests);
@@ -184,7 +229,13 @@ impl Simulator {
     }
 
     pub fn query_seed(&self, query: &Query) -> Option<Seed> {
-        let state = self.state.read().unwrap();
+        let state = match self.state.read() {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::error!("Failed to acquire read lock in query_seed: {}", e);
+                return None;
+            }
+        };
         match query {
             Query::Latest => state.seeds.last_key_value().map(|(_, seed)| seed.clone()),
             Query::Index(index) => state.seeds.get(index).cloned(),
@@ -313,7 +364,7 @@ async fn handle_updates_ws(
     filter: String,
 ) {
     tracing::info!("Updates WebSocket connected, filter: {}", filter);
-    let (mut sender, _receiver) = socket.split();
+    let (mut sender, mut receiver) = socket.split();
     let mut updates = simulator.update_subscriber();
 
     // Parse filter from URL path using UpdatesFilter
@@ -321,6 +372,7 @@ async fn handle_updates_ws(
         Some(filter) => filter,
         None => {
             tracing::warn!("Failed to parse filter hex");
+            let _ = sender.close().await;
             return;
         }
     };
@@ -328,63 +380,157 @@ async fn handle_updates_ws(
         Ok(subscription) => subscription,
         Err(e) => {
             tracing::warn!("Failed to decode UpdatesFilter: {:?}", e);
+            let _ = sender.close().await;
             return;
         }
     };
     tracing::info!("UpdatesFilter parsed successfully: {:?}", subscription);
 
     // Send updates based on subscription
-    while let Ok(internal_update) = updates.recv().await {
-        tracing::debug!("Received internal update");
-        // Convert InternalUpdate to Update and apply filtering
-        let update = match internal_update {
-            InternalUpdate::Seed(seed) => {
-                tracing::debug!("Broadcasting Seed update");
-                Some(Update::Seed(seed))
+    loop {
+        tokio::select! {
+            // Handle incoming WebSocket messages (ping/pong/close)
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(axum::extract::ws::Message::Close(_))) => {
+                        tracing::info!("Client closed WebSocket connection");
+                        break;
+                    }
+                    Some(Ok(axum::extract::ws::Message::Ping(data))) => {
+                        if sender.send(axum::extract::ws::Message::Pong(data)).await.is_err() {
+                            tracing::warn!("Failed to send pong, client disconnected");
+                            break;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        tracing::warn!("WebSocket error: {:?}", e);
+                        break;
+                    }
+                    None => {
+                        tracing::info!("WebSocket stream ended");
+                        break;
+                    }
+                    _ => {} // Ignore other message types
+                }
             }
-            InternalUpdate::Events(events, digests) => match &subscription {
-                UpdatesFilter::All => {
-                    tracing::debug!("Broadcasting Events update (All filter)");
-                    Some(Update::Events(events))
-                }
-                UpdatesFilter::Account(account) => {
-                    tracing::debug!("Filtering Events for account");
-                    filter_updates_for_account(events, digests, account).await
-                }
-            },
-        };
-        let Some(update) = update else {
-            tracing::debug!("Update filtered out");
-            continue;
-        };
+            // Handle broadcast updates
+            update_result = updates.recv() => {
+                match update_result {
+                    Ok(internal_update) => {
+                        tracing::debug!("Received internal update");
+                        // Convert InternalUpdate to Update and apply filtering
+                        let update = match internal_update {
+                            InternalUpdate::Seed(seed) => {
+                                tracing::debug!("Broadcasting Seed update");
+                                Some(Update::Seed(seed))
+                            }
+                            InternalUpdate::Events(events, digests) => match &subscription {
+                                UpdatesFilter::All => {
+                                    tracing::debug!("Broadcasting Events update (All filter)");
+                                    Some(Update::Events(events))
+                                }
+                                UpdatesFilter::Account(account) => {
+                                    tracing::debug!("Filtering Events for account");
+                                    filter_updates_for_account(events, digests, account).await
+                                }
+                            },
+                        };
+                        let Some(update) = update else {
+                            tracing::debug!("Update filtered out");
+                            continue;
+                        };
 
-        // Send update
-        tracing::info!("Sending update to WebSocket client");
-        if sender
-            .send(axum::extract::ws::Message::Binary(update.encode().to_vec()))
-            .await
-            .is_err()
-        {
-            tracing::warn!("Failed to send update, client disconnected");
-            break;
+                        // Send update
+                        tracing::info!("Sending update to WebSocket client");
+                        if sender
+                            .send(axum::extract::ws::Message::Binary(update.encode().to_vec()))
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!("Failed to send update, client disconnected");
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            "WebSocket client lagged behind, skipped {} messages. Consider increasing buffer size.",
+                            skipped
+                        );
+                        // Continue receiving - client may catch up
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tracing::info!("Broadcast channel closed");
+                        break;
+                    }
+                }
+            }
         }
     }
     tracing::info!("Updates WebSocket handler exiting");
+    let _ = sender.close().await;
 }
 
 async fn handle_mempool_ws(socket: axum::extract::ws::WebSocket, simulator: Arc<Simulator>) {
-    let (mut sender, _receiver) = socket.split();
+    tracing::info!("Mempool WebSocket connected");
+    let (mut sender, mut receiver) = socket.split();
     let mut txs = simulator.mempool_subscriber();
 
-    while let Ok(tx) = txs.recv().await {
-        if sender
-            .send(axum::extract::ws::Message::Binary(tx.encode().to_vec()))
-            .await
-            .is_err()
-        {
-            break;
+    loop {
+        tokio::select! {
+            // Handle incoming WebSocket messages (ping/pong/close)
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(axum::extract::ws::Message::Close(_))) => {
+                        tracing::info!("Client closed mempool WebSocket connection");
+                        break;
+                    }
+                    Some(Ok(axum::extract::ws::Message::Ping(data))) => {
+                        if sender.send(axum::extract::ws::Message::Pong(data)).await.is_err() {
+                            tracing::warn!("Failed to send pong, client disconnected");
+                            break;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        tracing::warn!("Mempool WebSocket error: {:?}", e);
+                        break;
+                    }
+                    None => {
+                        tracing::info!("Mempool WebSocket stream ended");
+                        break;
+                    }
+                    _ => {} // Ignore other message types
+                }
+            }
+            // Handle broadcast transactions
+            tx_result = txs.recv() => {
+                match tx_result {
+                    Ok(tx) => {
+                        if sender
+                            .send(axum::extract::ws::Message::Binary(tx.encode().to_vec()))
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!("Failed to send mempool update, client disconnected");
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            "Mempool WebSocket client lagged behind, skipped {} messages. Consider increasing buffer size.",
+                            skipped
+                        );
+                        // Continue receiving - client may catch up
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tracing::info!("Mempool broadcast channel closed");
+                        break;
+                    }
+                }
+            }
         }
     }
+    tracing::info!("Mempool WebSocket handler exiting");
+    let _ = sender.close().await;
 }
 
 async fn filter_updates_for_account(
@@ -420,9 +566,13 @@ async fn filter_updates_for_account(
 
     // Generate a filtered proof for only the relevant locations
     let locations_to_include = filtered_ops.iter().map(|(loc, _)| *loc).collect::<Vec<_>>();
-    let filtered_proof = create_multi_proof(&proof_store, &locations_to_include)
-        .await
-        .expect("failed to generate filtered proof");
+    let filtered_proof = match create_multi_proof(&proof_store, &locations_to_include).await {
+        Ok(proof) => proof,
+        Err(e) => {
+            tracing::error!("Failed to generate filtered proof: {:?}", e);
+            return None;
+        }
+    };
     Some(Update::FilteredEvents(FilteredEvents {
         progress: events.progress,
         certificate: events.certificate,
@@ -436,9 +586,10 @@ fn is_event_relevant_to_account(event: &Event, account: &PublicKey) -> bool {
         // Casino events - check if player matches
         Event::CasinoPlayerRegistered { player, .. } => player == account,
         Event::CasinoGameStarted { player, .. } => player == account,
-        Event::CasinoGameMoved { .. } => false, // No player field, handled by session
+        Event::CasinoGameMoved { .. } => true, // Broadcast all moves - clients filter by session_id
         Event::CasinoGameCompleted { player, .. } => player == account,
         Event::CasinoLeaderboardUpdated { .. } => true, // Leaderboard updates are public
+        Event::CasinoError { player, .. } => player == account,
         // Tournament events
         Event::TournamentStarted { .. } => true, // Tournament start is public
         Event::PlayerJoined { player, .. } => player == account,

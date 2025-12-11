@@ -5,6 +5,7 @@
 
 import { GameType, CasinoGameStartedEvent, CasinoGameMovedEvent, CasinoGameCompletedEvent } from '../types/casino';
 import { CasinoClient } from '../api/client.js';
+import { snakeToCamel } from '../utils/caseNormalizer';
 
 // Extend CasinoClient to include nonceManager property
 interface CasinoClientWithNonceManager extends CasinoClient {
@@ -187,29 +188,33 @@ export class CasinoChainService {
   private gameStartedHandlers: ((event: CasinoGameStartedEvent) => void)[] = [];
   private gameMovedHandlers: ((event: CasinoGameMovedEvent) => void)[] = [];
   private gameCompletedHandlers: ((event: CasinoGameCompletedEvent) => void)[] = [];
+  private leaderboardUpdatedHandlers: ((leaderboard: any) => void)[] = [];
 
   constructor(client: CasinoClient) {
     this.client = client as CasinoClientWithNonceManager;
 
     // Subscribe to typed events from the client
     this.client.onEvent('CasinoGameStarted', (event: RawCasinoGameStartedEvent) => {
+      // Normalize snake_case to camelCase
+      const normalized = snakeToCamel(event) as any;
+
       // DEBUG: Log raw event from chain
       console.log('[CasinoChainService] Raw CasinoGameStarted event:', {
-        rawSessionId: event.session_id,
-        rawSessionIdType: typeof event.session_id,
-        rawGameType: event.game_type,
-        rawBet: event.bet,
-        rawInitialState: event.initial_state,
+        rawSessionId: normalized.sessionId,
+        rawSessionIdType: typeof normalized.sessionId,
+        rawGameType: normalized.gameType,
+        rawBet: normalized.bet,
+        rawInitialState: normalized.initialState,
       });
       try {
         // Event is already decoded by the client, just pass it through
         const parsed: CasinoGameStartedEvent = {
           type: 'CasinoGameStarted',
-          sessionId: BigInt(event.session_id),
+          sessionId: BigInt(normalized.sessionId),
           player: new Uint8Array(0), // Placeholder, we get hex from event
-          gameType: this.parseGameType(event.game_type),
-          bet: BigInt(event.bet),
-          initialState: this.hexToBytes(event.initial_state),
+          gameType: this.parseGameType(normalized.gameType),
+          bet: BigInt(normalized.bet),
+          initialState: this.hexToBytes(normalized.initialState),
         };
         console.log('[CasinoChainService] Parsed CasinoGameStarted:', {
           sessionId: parsed.sessionId.toString(),
@@ -226,13 +231,30 @@ export class CasinoChainService {
     });
 
     this.client.onEvent('CasinoGameMoved', (event: RawCasinoGameMovedEvent) => {
+      // Normalize snake_case to camelCase
+      const normalized = snakeToCamel(event) as any;
+
+      // DEBUG: Log raw event from chain
+      console.log('[CasinoChainService] Raw CasinoGameMoved event:', {
+        rawSessionId: normalized.sessionId,
+        rawSessionIdType: typeof normalized.sessionId,
+        rawMoveNumber: normalized.moveNumber,
+        rawNewState: normalized.newState,
+      });
       try {
         const parsed: CasinoGameMovedEvent = {
           type: 'CasinoGameMoved',
-          sessionId: BigInt(event.session_id),
-          moveNumber: event.move_number,
-          newState: this.hexToBytes(event.new_state),
+          sessionId: BigInt(normalized.sessionId),
+          moveNumber: normalized.moveNumber,
+          newState: this.hexToBytes(normalized.newState),
         };
+        console.log('[CasinoChainService] Parsed CasinoGameMoved:', {
+          sessionId: parsed.sessionId.toString(),
+          sessionIdType: typeof parsed.sessionId,
+          moveNumber: parsed.moveNumber,
+          newStateLen: parsed.newState.length,
+          numHandlers: this.gameMovedHandlers.length,
+        });
         this.gameMovedHandlers.forEach(h => h(parsed));
       } catch (error) {
         console.error('[CasinoChainService] Failed to parse CasinoGameMoved:', error);
@@ -240,23 +262,28 @@ export class CasinoChainService {
     });
 
     this.client.onEvent('CasinoGameCompleted', (event: RawCasinoGameCompletedEvent) => {
+      // Normalize snake_case to camelCase
+      const normalized = snakeToCamel(event) as any;
+
       // DEBUG: Log raw event from chain
       console.log('[CasinoChainService] Raw CasinoGameCompleted event:', {
-        rawSessionId: event.session_id,
-        rawSessionIdType: typeof event.session_id,
-        rawPayout: event.payout,
-        rawFinalChips: event.final_chips,
+        rawSessionId: normalized.sessionId,
+        rawSessionIdType: typeof normalized.sessionId,
+        rawPayout: normalized.payout,
+        rawFinalChips: normalized.finalChips,
+        rawWasShielded: normalized.wasShielded,
+        rawWasDoubled: normalized.wasDoubled,
       });
       try {
         const parsed: CasinoGameCompletedEvent = {
           type: 'CasinoGameCompleted',
-          sessionId: BigInt(event.session_id),
+          sessionId: BigInt(normalized.sessionId),
           player: new Uint8Array(0), // Placeholder
-          gameType: this.parseGameType(event.game_type),
-          payout: BigInt(event.payout),
-          finalChips: BigInt(event.final_chips),
-          wasShielded: event.was_shielded,
-          wasDoubled: event.was_doubled,
+          gameType: this.parseGameType(normalized.gameType),
+          payout: BigInt(normalized.payout),
+          finalChips: BigInt(normalized.finalChips),
+          wasShielded: normalized.wasShielded,
+          wasDoubled: normalized.wasDoubled,
         };
         console.log('[CasinoChainService] Parsed sessionId:', parsed.sessionId.toString(), 'type:', typeof parsed.sessionId);
         this.gameCompletedHandlers.forEach(h => h(parsed));
@@ -264,13 +291,28 @@ export class CasinoChainService {
         console.error('[CasinoChainService] Failed to parse CasinoGameCompleted:', error);
       }
     });
+
+    this.client.onEvent('CasinoLeaderboardUpdated', (event: any) => {
+      const normalized = snakeToCamel(event) as any;
+      console.log('[CasinoChainService] CasinoLeaderboardUpdated event:', normalized);
+      try {
+        if (normalized.leaderboard) {
+          this.leaderboardUpdatedHandlers.forEach(h => h(normalized.leaderboard));
+        }
+      } catch (error) {
+        console.error('[CasinoChainService] Failed to parse CasinoLeaderboardUpdated:', error);
+      }
+    });
   }
 
   private hexToBytes(hex: string): Uint8Array {
     if (!hex || hex.length === 0) return new Uint8Array(0);
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < hex.length; i += 2) {
-      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    // Strip 0x prefix if present
+    const cleanHex = hex.startsWith('0x') ? hex.slice(2) : hex;
+    if (cleanHex.length === 0) return new Uint8Array(0);
+    const bytes = new Uint8Array(cleanHex.length / 2);
+    for (let i = 0; i < cleanHex.length; i += 2) {
+      bytes[i / 2] = parseInt(cleanHex.substring(i, i + 2), 16);
     }
     return bytes;
   }
@@ -402,6 +444,20 @@ export class CasinoChainService {
       const index = this.gameCompletedHandlers.indexOf(handler);
       if (index !== -1) {
         this.gameCompletedHandlers.splice(index, 1);
+      }
+    };
+  }
+
+  /**
+   * Subscribe to leaderboard updated events
+   * @returns Unsubscribe function
+   */
+  onLeaderboardUpdated(handler: (leaderboard: any) => void): () => void {
+    this.leaderboardUpdatedHandlers.push(handler);
+    return () => {
+      const index = this.leaderboardUpdatedHandlers.indexOf(handler);
+      if (index !== -1) {
+        this.leaderboardUpdatedHandlers.splice(index, 1);
       }
     };
   }

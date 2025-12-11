@@ -273,7 +273,13 @@ export class NonceManager {
       }
     }
 
-    keysToRemove.forEach(key => localStorage.removeItem(key));
+    keysToRemove.forEach(key => {
+      localStorage.removeItem(key);
+    });
+
+    if (keysToRemove.length > 0) {
+      console.log(`Cleaned up ${keysToRemove.length} pending transactions`);
+    }
   }
 
   /**
@@ -303,30 +309,6 @@ export class NonceManager {
     toRemove.forEach(({ key, nonce }) => {
       localStorage.removeItem(key);
     });
-  }
-
-  /**
-   * Remove all pending transactions for this account.
-   * @private
-   */
-  cleanupAllTransactions() {
-    const prefix = this.TX_STORAGE_PREFIX;
-    const keysToRemove = [];
-
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(prefix)) {
-        keysToRemove.push(key);
-      }
-    }
-
-    keysToRemove.forEach(key => {
-      localStorage.removeItem(key);
-    });
-
-    if (keysToRemove.length > 0) {
-      console.log(`Cleaned up ${keysToRemove.length} pending transactions`);
-    }
   }
 
   /**

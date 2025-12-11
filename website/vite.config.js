@@ -49,10 +49,8 @@ export default defineConfig({
       }
     }
   ],
-  define: {
-    'import.meta.env.VITE_IDENTITY': JSON.stringify(process.env.VITE_IDENTITY || ''),
-    'import.meta.env.VITE_URL': JSON.stringify(backendUrl)
-  },
+  // Note: VITE_IDENTITY and VITE_URL are automatically loaded from .env files
+  // Don't use define here as it runs before .env is loaded
   server: {
     port: 3000,
     proxy: {

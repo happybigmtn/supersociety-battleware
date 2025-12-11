@@ -19,7 +19,7 @@ export const VideoPokerView = React.memo<VideoPokerViewProps>(({ gameState, onTo
                 <h1 className="absolute top-0 text-xl font-bold text-gray-500 tracking-widest uppercase">VIDEO POKER</h1>
                 {/* Center Info */}
                 <div className="text-center space-y-3 relative z-20">
-                    <div className="text-2xl font-bold text-white tracking-widest animate-pulse">
+                    <div className="text-2xl font-bold text-terminal-gold tracking-widest animate-pulse">
                         {gameState.message}
                     </div>
                 </div>

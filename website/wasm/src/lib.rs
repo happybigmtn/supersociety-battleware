@@ -187,6 +187,32 @@ impl Transaction {
         let tx = ExecutionTransaction::sign(&signer.private_key, nonce, instruction);
         Ok(Transaction { inner: tx })
     }
+
+    /// Sign a new casino join tournament transaction.
+    #[wasm_bindgen]
+    pub fn casino_join_tournament(signer: &Signer, nonce: u64, tournament_id: u64) -> Result<Transaction, JsValue> {
+        let instruction = Instruction::CasinoJoinTournament { tournament_id };
+        let tx = ExecutionTransaction::sign(&signer.private_key, nonce, instruction);
+        Ok(Transaction { inner: tx })
+    }
+
+    /// Sign a new casino start tournament transaction.
+    #[wasm_bindgen]
+    pub fn casino_start_tournament(
+        signer: &Signer,
+        nonce: u64,
+        tournament_id: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+    ) -> Result<Transaction, JsValue> {
+        let instruction = Instruction::CasinoStartTournament {
+            tournament_id,
+            start_time_ms,
+            end_time_ms,
+        };
+        let tx = ExecutionTransaction::sign(&signer.private_key, nonce, instruction);
+        Ok(Transaction { inner: tx })
+    }
 }
 
 /// Encode an account key.
@@ -220,6 +246,13 @@ pub fn encode_casino_session_key(session_id: u64) -> Vec<u8> {
 #[wasm_bindgen]
 pub fn encode_casino_leaderboard_key() -> Vec<u8> {
     let key = Key::CasinoLeaderboard;
+    key.encode().to_vec()
+}
+
+/// Encode a casino tournament key.
+#[wasm_bindgen]
+pub fn encode_casino_tournament_key(tournament_id: u64) -> Vec<u8> {
+    let key = Key::Tournament(tournament_id);
     key.encode().to_vec()
 }
 
@@ -321,7 +354,11 @@ fn decode_value(value: Value) -> Result<JsValue, JsValue> {
             serde_json::json!({
                 "type": "Tournament",
                 "id": tournament.id,
-                "phase": format!("{:?}", tournament.phase)
+                "phase": format!("{:?}", tournament.phase),
+                "start_block": tournament.start_block,
+                "start_time_ms": tournament.start_time_ms,
+                "end_time_ms": tournament.end_time_ms,
+                "player_count": tournament.players.len()
             })
         }
     };
@@ -467,6 +504,20 @@ fn decode_event(event: &Event) -> Result<serde_json::Value, JsValue> {
                 "entries": entries
             })
         }
+        Event::CasinoError {
+            player,
+            session_id,
+            error_code,
+            message,
+        } => {
+            serde_json::json!({
+                "type": "CasinoError",
+                "player": hex(&player.encode()),
+                "session_id": session_id,
+                "error_code": error_code,
+                "message": message
+            })
+        }
         // Tournament events
         Event::TournamentStarted { id, start_block } => {
             serde_json::json!({
@@ -594,6 +645,7 @@ fn process_output(output: &Output) -> Result<serde_json::Value, JsValue> {
                 Instruction::CasinoToggleShield => "CasinoToggleShield",
                 Instruction::CasinoToggleDouble => "CasinoToggleDouble",
                 Instruction::CasinoJoinTournament { .. } => "CasinoJoinTournament",
+                Instruction::CasinoStartTournament { .. } => "CasinoStartTournament",
             };
             Ok(serde_json::json!({
                 "type": "Transaction",

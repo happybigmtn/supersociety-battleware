@@ -23,7 +23,7 @@ export const UltimateHoldemView = React.memo<UltimateHoldemViewProps>(({ gameSta
     );
 
     const showDealerCards = useMemo(() =>
-        gameState.stage === 'RESULT' || gameState.dealerCards.every(c => !c.isHidden),
+        gameState.stage === 'RESULT' || gameState.dealerCards.every(c => c && !c.isHidden),
         [gameState.stage, gameState.dealerCards]
     );
 
@@ -70,7 +70,7 @@ export const UltimateHoldemView = React.memo<UltimateHoldemViewProps>(({ gameSta
 
                 {/* Center Info */}
                 <div className="text-center space-y-2 relative z-20">
-                    <div className="text-xl font-bold text-white tracking-widest animate-pulse">
+                    <div className="text-xl font-bold text-terminal-gold tracking-widest animate-pulse">
                         {gameState.message}
                     </div>
                     <div className="text-xs text-gray-500 flex gap-4 justify-center">

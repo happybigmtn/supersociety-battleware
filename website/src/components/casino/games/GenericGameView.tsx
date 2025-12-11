@@ -1,6 +1,6 @@
 
 import React, { useMemo } from 'react';
-import { GameState } from '../../../types';
+import { GameState, GameType } from '../../../types';
 import { Hand } from '../GameComponents';
 import { getVisibleHandValue } from '../../../utils/gameUtils';
 
@@ -8,6 +8,7 @@ export const GenericGameView = React.memo<{ gameState: GameState }>(({ gameState
     const dealerValue = useMemo(() => getVisibleHandValue(gameState.dealerCards), [gameState.dealerCards]);
     const playerValue = useMemo(() => getVisibleHandValue(gameState.playerCards), [gameState.playerCards]);
     const gameTitle = useMemo(() => gameState.type.replace(/_/g, ' '), [gameState.type]);
+    const isWarState = useMemo(() => gameState.type === GameType.CASINO_WAR && gameState.message.includes('WAR'), [gameState.type, gameState.message]);
     return (
         <>
             <div className="flex-1 w-full flex flex-col items-center justify-center gap-8 relative z-10 pb-20">
@@ -33,7 +34,7 @@ export const GenericGameView = React.memo<{ gameState: GameState }>(({ gameState
 
                 {/* Center Info */}
                 <div className="text-center space-y-3 relative z-20">
-                    <div className="text-2xl font-bold text-white tracking-widest animate-pulse">
+                    <div className="text-2xl font-bold text-terminal-gold tracking-widest animate-pulse">
                         {gameState.message}
                     </div>
                 </div>
@@ -57,11 +58,23 @@ export const GenericGameView = React.memo<{ gameState: GameState }>(({ gameState
 
             {/* CONTROLS */}
              <div className="absolute bottom-8 left-0 right-0 h-16 bg-terminal-black/90 border-t-2 border-gray-700 flex items-center justify-center gap-2 p-2 z-40">
-                 {/* Generic controls usually just Space to deal for Casino War etc */}
-                  <div className="flex flex-col items-center border border-terminal-green/50 rounded bg-black/50 px-3 py-1 w-24">
+                 {isWarState ? (
+                    <>
+                        <div className="flex flex-col items-center border border-terminal-green/50 rounded bg-black/50 px-3 py-1">
+                            <span className="text-terminal-green font-bold text-sm">W</span>
+                            <span className="text-[10px] text-gray-500">WAR</span>
+                        </div>
+                        <div className="flex flex-col items-center border border-terminal-accent/50 rounded bg-black/50 px-3 py-1">
+                            <span className="text-terminal-accent font-bold text-sm">S</span>
+                            <span className="text-[10px] text-gray-500">SURRENDER</span>
+                        </div>
+                    </>
+                 ) : (
+                    <div className="flex flex-col items-center border border-terminal-green/50 rounded bg-black/50 px-3 py-1 w-24">
                         <span className="text-terminal-green font-bold text-sm">SPACE</span>
                         <span className="text-[10px] text-gray-500">DEAL</span>
                     </div>
+                 )}
              </div>
         </>
     );

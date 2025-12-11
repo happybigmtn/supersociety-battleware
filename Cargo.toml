@@ -2,9 +2,7 @@
 members = [
     "node",
     "client",
-    "deployer",
     "execution",
-    "randotron",
     "simulator",
     "types",
     "website/wasm",
@@ -23,9 +21,6 @@ nullspace-node = { version = "0.0.1", path = "node" }
 nullspace-execution = { version = "0.0.1", path = "execution", default-features = false }
 nullspace-simulator = { version = "0.0.1", path = "simulator" }
 nullspace-types = { version = "0.0.1", path = "types" }
-nullspace-randotron = { version = "0.0.1", path = "randotron" }
-nullspace-deployer = { version = "0.0.1", path = "deployer" }
-
 # Commonware dependencies
 commonware-broadcast = { version = "0.0.62" }
 commonware-codec = { version = "0.0.62" }

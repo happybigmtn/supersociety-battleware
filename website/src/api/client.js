@@ -1,5 +1,6 @@
 import { WasmWrapper } from './wasm.js';
 import { NonceManager } from './nonceManager.js';
+import { snakeToCamel } from '../utils/caseNormalizer';
 
 // Delay between fetch retries
 const FETCH_RETRY_DELAY_MS = 1000;
@@ -209,7 +210,9 @@ export class CasinoClient {
     try {
       // Decode value using WASM - returns plain JSON object
       const value = this.wasm.decodeLookup(valueBytes);
-      return { found: true, value };
+      // Normalize snake_case to camelCase
+      const normalized = snakeToCamel(value);
+      return { found: true, value: normalized };
     } catch (error) {
       console.error('Failed to decode value:', error);
       return { found: false, value: null };
@@ -371,14 +374,16 @@ export class CasinoClient {
               // Process each event from the array - treat FilteredEvents the same as Events
               for (const eventData of decodedUpdate.events) {
                 console.log('[WebSocket] Event type:', eventData.type, 'data:', eventData);
+                // Normalize snake_case to camelCase
+                const normalizedEvent = snakeToCamel(eventData);
                 // Check if this is a transaction from our account
-                if (eventData.type === 'Transaction') {
+                if (normalizedEvent.type === 'Transaction') {
                   if (this.nonceManager.publicKeyHex &&
-                    eventData.public.toLowerCase() === this.nonceManager.publicKeyHex.toLowerCase()) {
-                    this.nonceManager.updateNonceFromTransaction(eventData.nonce);
+                    normalizedEvent.public.toLowerCase() === this.nonceManager.publicKeyHex.toLowerCase()) {
+                    this.nonceManager.updateNonceFromTransaction(normalizedEvent.nonce);
                   }
                 }
-                this.handleEvent(eventData);
+                this.handleEvent(normalizedEvent);
               }
             }
           } catch (decodeError) {
@@ -526,8 +531,10 @@ export class CasinoClient {
     if (result.found && result.value) {
       // Value is already a plain object from WASM
       if (result.value.type === 'CasinoPlayer') {
-        console.log('[Client] Found CasinoPlayer:', result.value);
-        return result.value;
+        // Normalize snake_case to camelCase for frontend consistency
+        const normalized = snakeToCamel(result.value);
+        console.log('[Client] Found CasinoPlayer:', normalized);
+        return normalized;
       } else {
         console.log('[Client] Value is not a CasinoPlayer type:', result.value.type);
         return null;
@@ -572,6 +579,28 @@ export class CasinoClient {
         return result.value;
       } else {
         console.log('Value is not a CasinoLeaderboard type:', result.value.type);
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get casino tournament information by tournament ID.
+   * @param {bigint|number} tournamentId - Tournament ID
+   * @returns {Promise<Object|null>} Tournament data or null if not found
+   */
+  async getCasinoTournament(tournamentId) {
+    const keyBytes = this.wasm.encodeCasinoTournamentKey(tournamentId);
+    const result = await this.queryState(keyBytes);
+
+    if (result.found && result.value) {
+      if (result.value.type === 'Tournament') {
+        // Normalize snake_case to camelCase for frontend consistency
+        return snakeToCamel(result.value);
+      } else {
+        console.log('Value is not a Tournament type:', result.value.type);
         return null;
       }
     }
