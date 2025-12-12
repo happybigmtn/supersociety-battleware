@@ -107,6 +107,13 @@ struct EconomySnapshot {
     stakes_in: u64,
     unstake_actions: u64,
     claim_actions: u64,
+    pool_tvl_vusdt: f64,
+    amm_invariant_k: u128,
+    lp_share_price_vusdt: f64,
+    whale_volume_vusdt: u64,
+    retail_volume_vusdt: u64,
+    grinder_tournament_joins: u64,
+    maximizer_game_bet_volume: u64,
     errors_invalid_move: u64,
     errors_invalid_bet: u64,
     errors_insufficient: u64,
@@ -747,6 +754,10 @@ struct ActivityTally {
     swap_count: u64,
     buy_volume_vusdt: u64,
     sell_volume_rng: u64,
+    whale_volume_vusdt: u64,
+    retail_volume_vusdt: u64,
+    maximizer_game_bet_volume: u64,
+    grinder_tournament_joins: u64,
     game_bet_volume: u64,
     game_net_payout: i64,
     game_starts: u64,
@@ -783,7 +794,10 @@ struct ActivityTally {
 async fn run_monitor(
     client: Arc<Client>,
     maximizer: Arc<Bot>,
-    _sample_whale: Arc<Bot>,
+    whales: Vec<PublicKey>,
+    retail: Vec<PublicKey>,
+    grinders: Vec<PublicKey>,
+    maximizer_pk: PublicKey,
     duration: Duration,
 ) {
     let start = Instant::now();
@@ -852,6 +866,13 @@ async fn run_monitor(
             } else {
                 last_price
             };
+            let pool_tvl_vusdt = a.reserve_vusdt as f64 + a.reserve_rng as f64 * price;
+            let lp_share_price_vusdt = if a.total_shares > 0 {
+                pool_tvl_vusdt / a.total_shares as f64
+            } else {
+                0.0
+            };
+            let amm_invariant_k = a.reserve_rng as u128 * a.reserve_vusdt as u128;
             let submit_failures_delta = SUBMIT_FAILURES
                 .load(Ordering::Relaxed)
                 .saturating_sub(last_submit_failures);
@@ -897,13 +918,25 @@ async fn run_monitor(
                                     ..
                                 } => {
                                     metrics.swap_count += 1;
+                                    let is_whale = whales.contains(&tx.public);
+                                    let is_retail = retail.contains(&tx.public);
                                     if *is_buying_rng {
                                         volume_vusdt += amount_in;
                                         metrics.buy_volume_vusdt += amount_in;
+                                        if is_whale {
+                                            metrics.whale_volume_vusdt += amount_in;
+                                        } else if is_retail {
+                                            metrics.retail_volume_vusdt += amount_in;
+                                        }
                                     } else {
                                         let vusd_val = (*amount_in as f64 * price) as u64;
                                         volume_vusdt += vusd_val;
                                         metrics.sell_volume_rng += *amount_in;
+                                        if is_whale {
+                                            metrics.whale_volume_vusdt += vusd_val;
+                                        } else if is_retail {
+                                            metrics.retail_volume_vusdt += vusd_val;
+                                        }
                                     }
                                 }
                                 Instruction::Stake { amount, .. } => metrics.stakes_in += *amount,
@@ -929,12 +962,18 @@ async fn run_monitor(
                                 Instruction::CasinoStartGame { bet, .. } => {
                                     metrics.game_starts += 1;
                                     metrics.game_bet_volume += *bet;
+                                    if tx.public == maximizer_pk {
+                                        metrics.maximizer_game_bet_volume += *bet;
+                                    }
                                 }
                                 Instruction::CasinoStartTournament { .. } => {
                                     metrics.tournament_started += 1
                                 }
                                 Instruction::CasinoJoinTournament { .. } => {
-                                    metrics.tournament_joined += 1
+                                    metrics.tournament_joined += 1;
+                                    if grinders.contains(&tx.public) {
+                                        metrics.grinder_tournament_joins += 1;
+                                    }
                                 }
                                 Instruction::CasinoEndTournament { .. } => {
                                     metrics.tournament_ended += 1
@@ -1074,6 +1113,13 @@ async fn run_monitor(
                 stakes_in: metrics.stakes_in,
                 unstake_actions: metrics.unstake_actions,
                 claim_actions: metrics.claim_actions,
+                pool_tvl_vusdt,
+                amm_invariant_k,
+                lp_share_price_vusdt,
+                whale_volume_vusdt: metrics.whale_volume_vusdt,
+                retail_volume_vusdt: metrics.retail_volume_vusdt,
+                grinder_tournament_joins: metrics.grinder_tournament_joins,
+                maximizer_game_bet_volume: metrics.maximizer_game_bet_volume,
                 errors_invalid_move: metrics.errors_invalid_move,
                 errors_invalid_bet: metrics.errors_invalid_bet,
                 errors_insufficient: metrics.errors_insufficient,
@@ -1171,9 +1217,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Monitor
     let c = client.clone();
     let m = maximizer.clone();
-    let w = whales[0].clone();
+    let whale_pks: Vec<PublicKey> = whales.iter().map(|w| w.public_key()).collect();
+    let retail_pks: Vec<PublicKey> = retail.iter().map(|r| r.public_key()).collect();
+    let grinder_pks: Vec<PublicKey> = grinders.iter().map(|g| g.public_key()).collect();
+    let maximizer_pk = maximizer.public_key();
     handles.push(tokio::spawn(async move {
-        run_monitor(c, m, w, duration).await;
+        run_monitor(
+            c,
+            m,
+            whale_pks,
+            retail_pks,
+            grinder_pks,
+            maximizer_pk,
+            duration,
+        )
+        .await;
     }));
 
     // Keeper
