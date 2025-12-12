@@ -32,6 +32,10 @@ pub mod mocks;
 
 pub type Adb<E, T> = Any<E, Digest, Value, Sha256, T>;
 
+// Keep a small amount of LP tokens permanently locked so the pool can never be fully drained.
+// This mirrors the MINIMUM_LIQUIDITY pattern used by Raydium/Uniswap to avoid zero-price states.
+const MINIMUM_LIQUIDITY: u64 = 1_000;
+
 pub trait State {
     fn get(&self, key: &Key) -> impl Future<Output = Option<Value>>;
     fn insert(&mut self, key: Key, value: Value) -> impl Future<Output = ()>;
@@ -1783,7 +1787,7 @@ impl<'a, S: State> Layer<'a, S> {
         let lp_balance = self.get_lp_balance(public).await;
 
         // Initial liquidity?
-        let shares_minted = if amm.total_shares == 0 {
+        let mut shares_minted = if amm.total_shares == 0 {
             // Sqrt(x*y)
             let val = (rng_amount as u128) * (usdt_amount as u128);
             Self::integer_sqrt(val)
@@ -1802,6 +1806,20 @@ impl<'a, S: State> Layer<'a, S> {
                 (usdt_amount as u128 * amm.total_shares as u128) / amm.reserve_vusdt as u128;
             share_a.min(share_b) as u64
         };
+
+        // Lock a minimum amount of LP shares on first deposit so reserves can never be fully drained.
+        if amm.total_shares == 0 {
+            if shares_minted <= MINIMUM_LIQUIDITY {
+                return vec![Event::CasinoError {
+                    player: public.clone(),
+                    session_id: None,
+                    error_code: nullspace_types::casino::ERROR_INVALID_MOVE,
+                    message: "Initial liquidity too small".to_string(),
+                }];
+            }
+            amm.total_shares = amm.total_shares.saturating_add(MINIMUM_LIQUIDITY);
+            shares_minted = shares_minted.saturating_sub(MINIMUM_LIQUIDITY);
+        }
 
         if shares_minted == 0 {
             return vec![Event::CasinoError {

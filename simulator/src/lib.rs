@@ -271,11 +271,11 @@ impl Api {
             .allow_headers([header::CONTENT_TYPE]);
 
         // Configure Rate Limiting
-        // 10,000 requests per second with a burst of 20,000
+        // Maximize throughput for local sims: allow ~1M req/s with a large burst
         let governor_conf = Arc::new(
             GovernorConfigBuilder::default()
-                .per_second(10_000)
-                .burst_size(20_000)
+                .per_nanosecond(1) // effectively unlimited for local sims (~1B req/s)
+                .burst_size(2_000_000)
                 .key_extractor(SmartIpKeyExtractor)
                 .finish()
                 .unwrap(),

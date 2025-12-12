@@ -16,7 +16,6 @@ use commonware_cryptography::{
     PrivateKeyExt, Signer,
 };
 use commonware_storage::store::operation::Keyless;
-use futures::StreamExt;
 use nullspace_client::Client;
 use nullspace_types::{
     api::{Update, UpdatesFilter},
@@ -31,16 +30,18 @@ use std::{
     io::Write,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::{Duration, Instant},
 };
-use tokio::time;
+use tokio::{sync::Mutex, time};
 use tracing::{error, info, warn};
 
 const INITIAL_POOL_RNG: u64 = 500_000;
 const INITIAL_POOL_VUSD: u64 = 500_000;
 const BOOTSTRAP_COLLATERAL: u64 = INITIAL_POOL_VUSD * 2; // 50% LTV requires 2x collateral
+const CLIENT_MAX_RPS: u64 = 50_000;
+static SUBMIT_FAILURES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -106,6 +107,11 @@ struct EconomySnapshot {
     stakes_in: u64,
     unstake_actions: u64,
     claim_actions: u64,
+    errors_invalid_move: u64,
+    errors_insufficient: u64,
+    errors_rate_limited: u64,
+    errors_other: u64,
+    submit_failures: u64,
     vault_collateral: u64,
     vusd_borrowed: u64,
     vusd_repaid: u64,
@@ -119,19 +125,57 @@ struct EconomySnapshot {
     errors: u64,
 }
 
+struct SubmitRateState {
+    window_start: u64,
+    count: u64,
+}
+
+static SUBMIT_RATE_STATE: OnceLock<Mutex<SubmitRateState>> = OnceLock::new();
+
+async fn throttle_submissions() {
+    let limiter = SUBMIT_RATE_STATE.get_or_init(|| {
+        Mutex::new(SubmitRateState {
+            window_start: 0,
+            count: 0,
+        })
+    });
+
+    loop {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut state = limiter.lock().await;
+        if state.window_start != now {
+            state.window_start = now;
+            state.count = 0;
+        }
+        if state.count < CLIENT_MAX_RPS {
+            state.count += 1;
+            break;
+        }
+        drop(state);
+        time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
 async fn flush_batch(client: &Arc<Client>, txs: &mut Vec<Transaction>) {
     if txs.is_empty() {
         return;
     }
     let batch: Vec<Transaction> = txs.drain(..).collect();
+    throttle_submissions().await;
     if let Err(e) = client.submit_transactions(batch).await {
         warn!("Batch submission failed: {}", e);
+        SUBMIT_FAILURES.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 async fn flush_tx(client: &Client, tx: Transaction) {
+    throttle_submissions().await;
     if let Err(e) = client.submit_transactions(vec![tx]).await {
         warn!("Tx failed: {}", e);
+        SUBMIT_FAILURES.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -700,6 +744,10 @@ struct ActivityTally {
     stakes_in: u64,
     unstake_actions: u64,
     claim_actions: u64,
+    errors_invalid_move: u64,
+    errors_insufficient: u64,
+    errors_rate_limited: u64,
+    errors_other: u64,
     vault_collateral: u64,
     vusd_borrowed: u64,
     vusd_repaid: u64,
@@ -723,6 +771,7 @@ async fn run_monitor(
     let start = Instant::now();
     let mut log = Vec::new();
     let mut last_price = 1.0f64;
+    let mut last_submit_failures = 0u64;
 
     info!("Starting Monitor (Block-based)...");
 
@@ -785,6 +834,9 @@ async fn run_monitor(
             } else {
                 last_price
             };
+            let submit_failures_delta = SUBMIT_FAILURES
+                .load(Ordering::Relaxed)
+                .saturating_sub(last_submit_failures);
             let mut liquidity_rng_added = metrics.liquidity_rng_added;
             let mut liquidity_vusd_added = metrics.liquidity_vusd_added;
             let mut liquidity_shares_removed = metrics.liquidity_shares_removed;
@@ -792,24 +844,22 @@ async fn run_monitor(
             if let Some(prev) = &last_amm {
                 if a.total_shares > prev.total_shares {
                     if prev.total_shares == 0 {
-                        liquidity_rng_added =
-                            liquidity_rng_added.saturating_add(a.reserve_rng);
-                        liquidity_vusd_added =
-                            liquidity_vusd_added.saturating_add(a.reserve_vusdt);
+                        liquidity_rng_added = liquidity_rng_added.saturating_add(a.reserve_rng);
+                        liquidity_vusd_added = liquidity_vusd_added.saturating_add(a.reserve_vusdt);
                     } else {
                         let share_delta = a.total_shares - prev.total_shares;
                         let add_rng = ((share_delta as u128 * prev.reserve_rng as u128)
-                            / prev.total_shares as u128) as u64;
+                            / prev.total_shares as u128)
+                            as u64;
                         let add_vusd = ((share_delta as u128 * prev.reserve_vusdt as u128)
-                            / prev.total_shares as u128) as u64;
-                        liquidity_rng_added =
-                            liquidity_rng_added.saturating_add(add_rng);
-                        liquidity_vusd_added =
-                            liquidity_vusd_added.saturating_add(add_vusd);
+                            / prev.total_shares as u128)
+                            as u64;
+                        liquidity_rng_added = liquidity_rng_added.saturating_add(add_rng);
+                        liquidity_vusd_added = liquidity_vusd_added.saturating_add(add_vusd);
                     }
                 } else if a.total_shares < prev.total_shares {
-                    liquidity_shares_removed = liquidity_shares_removed
-                        .saturating_add(prev.total_shares - a.total_shares);
+                    liquidity_shares_removed =
+                        liquidity_shares_removed.saturating_add(prev.total_shares - a.total_shares);
                 }
             } else if a.total_shares > 0 {
                 liquidity_rng_added = liquidity_rng_added.saturating_add(a.reserve_rng);
@@ -882,7 +932,21 @@ async fn run_monitor(
                             Event::TournamentStarted { .. } => metrics.tournament_started += 1,
                             Event::PlayerJoined { .. } => metrics.tournament_joined += 1,
                             Event::TournamentEnded { .. } => metrics.tournament_ended += 1,
-                            Event::CasinoError { .. } => metrics.errors += 1,
+                            Event::CasinoError { error_code, .. } => {
+                                metrics.errors += 1;
+                                match error_code {
+                                    nullspace_types::casino::ERROR_INVALID_MOVE => {
+                                        metrics.errors_invalid_move += 1;
+                                    }
+                                    nullspace_types::casino::ERROR_INSUFFICIENT_FUNDS => {
+                                        metrics.errors_insufficient += 1;
+                                    }
+                                    nullspace_types::casino::ERROR_RATE_LIMITED => {
+                                        metrics.errors_rate_limited += 1;
+                                    }
+                                    _ => metrics.errors_other += 1,
+                                }
+                            }
                             _ => {}
                         },
                         _ => {}
@@ -965,6 +1029,11 @@ async fn run_monitor(
                 stakes_in: metrics.stakes_in,
                 unstake_actions: metrics.unstake_actions,
                 claim_actions: metrics.claim_actions,
+                errors_invalid_move: metrics.errors_invalid_move,
+                errors_insufficient: metrics.errors_insufficient,
+                errors_rate_limited: metrics.errors_rate_limited,
+                errors_other: metrics.errors_other,
+                submit_failures: submit_failures_delta,
                 vault_collateral: metrics.vault_collateral,
                 vusd_borrowed: metrics.vusd_borrowed,
                 vusd_repaid: metrics.vusd_repaid,
@@ -987,6 +1056,7 @@ async fn run_monitor(
             // Update state for next delta
             last_house = current_house;
             last_amm = Some(a);
+            last_submit_failures = SUBMIT_FAILURES.load(Ordering::Relaxed);
 
             // Debug Logs
             info!(
