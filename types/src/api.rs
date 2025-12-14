@@ -14,6 +14,70 @@ use commonware_storage::{
 /// Maximum number of transactions that can be submitted in a single submission
 pub const MAX_SUBMISSION_TRANSACTIONS: usize = 128;
 
+const MAX_PROOF_NODES: usize = 500;
+const MAX_PROOF_OPS: usize = 500;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum VerifyError {
+    InvalidSignature,
+    ProgressDigestMismatch,
+    StateOpsRangeMismatch {
+        start: u64,
+        end: u64,
+        ops_len: usize,
+    },
+    EventsOpsRangeMismatch {
+        start: u64,
+        end: u64,
+        ops_len: usize,
+    },
+    StateProofInvalid(String),
+    EventsProofInvalid(String),
+    LookupProofInvalid,
+    FilteredEventsOutOfRange {
+        loc: u64,
+        start: u64,
+        end: u64,
+    },
+    FilteredEventsProofInvalid,
+}
+
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyError::InvalidSignature => write!(f, "invalid signature"),
+            VerifyError::ProgressDigestMismatch => write!(f, "progress digest mismatch"),
+            VerifyError::StateOpsRangeMismatch {
+                start,
+                end,
+                ops_len,
+            } => write!(
+                f,
+                "state proof ops range mismatch (start={start}, end={end}, ops_len={ops_len})"
+            ),
+            VerifyError::EventsOpsRangeMismatch {
+                start,
+                end,
+                ops_len,
+            } => write!(
+                f,
+                "events proof ops range mismatch (start={start}, end={end}, ops_len={ops_len})"
+            ),
+            VerifyError::StateProofInvalid(err) => write!(f, "invalid state proof: {err}"),
+            VerifyError::EventsProofInvalid(err) => write!(f, "invalid events proof: {err}"),
+            VerifyError::LookupProofInvalid => write!(f, "invalid lookup proof"),
+            VerifyError::FilteredEventsOutOfRange { loc, start, end } => write!(
+                f,
+                "filtered event location out of range (loc={loc}, start={start}, end={end})"
+            ),
+            VerifyError::FilteredEventsProofInvalid => write!(f, "invalid filtered events proof"),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
+
 pub enum Query {
     Latest,
     Index(u64),
@@ -67,49 +131,56 @@ impl Summary {
     /// Verify the summary and return the digests from both state and events proofs.
     /// Returns (state_digests, events_digests) on success.
     #[allow(clippy::type_complexity)]
-    pub fn verify(&self, identity: &Identity) -> Option<(Vec<(u64, Digest)>, Vec<(u64, Digest)>)> {
+    pub fn verify(
+        &self,
+        identity: &Identity,
+    ) -> Result<(Vec<(u64, Digest)>, Vec<(u64, Digest)>), VerifyError> {
         // Verify the signature
         if !self.certificate.verify(NAMESPACE, identity) {
-            return None;
+            return Err(VerifyError::InvalidSignature);
         }
         if self.progress.digest() != self.certificate.item.digest {
-            return None;
+            return Err(VerifyError::ProgressDigestMismatch);
         }
 
         // Verify the state proof
-        if self.progress.state_start_op + self.state_proof_ops.len() as u64
-            != self.progress.state_end_op
-        {
-            return None;
+        let state_ops_len = self.state_proof_ops.len();
+        if self.progress.state_start_op + state_ops_len as u64 != self.progress.state_end_op {
+            return Err(VerifyError::StateOpsRangeMismatch {
+                start: self.progress.state_start_op,
+                end: self.progress.state_end_op,
+                ops_len: state_ops_len,
+            });
         }
         let mut hasher = Standard::<Sha256>::new();
-        let Ok(state_proof_digests) = verify_proof_and_extract_digests(
+        let state_proof_digests = verify_proof_and_extract_digests(
             &mut hasher,
             &self.state_proof,
             self.progress.state_start_op,
             &self.state_proof_ops,
             &self.progress.state_root,
-        ) else {
-            return None;
-        };
+        )
+        .map_err(|err| VerifyError::StateProofInvalid(err.to_string()))?;
 
         // Verify the events proof and extract digests
-        if self.progress.events_start_op + self.events_proof_ops.len() as u64
-            != self.progress.events_end_op
-        {
-            return None;
+        let events_ops_len = self.events_proof_ops.len();
+        if self.progress.events_start_op + events_ops_len as u64 != self.progress.events_end_op {
+            return Err(VerifyError::EventsOpsRangeMismatch {
+                start: self.progress.events_start_op,
+                end: self.progress.events_end_op,
+                ops_len: events_ops_len,
+            });
         }
-        let Ok(events_proof_digests) = verify_proof_and_extract_digests(
+        let events_proof_digests = verify_proof_and_extract_digests(
             &mut hasher,
             &self.events_proof,
             self.progress.events_start_op,
             &self.events_proof_ops,
             &self.progress.events_root,
-        ) else {
-            return None;
-        };
+        )
+        .map_err(|err| VerifyError::EventsProofInvalid(err.to_string()))?;
 
-        Some((state_proof_digests, events_proof_digests))
+        Ok((state_proof_digests, events_proof_digests))
     }
 }
 
@@ -130,10 +201,10 @@ impl Read for Summary {
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
         let progress = Progress::read(reader)?;
         let certificate = Certificate::read(reader)?;
-        let state_proof = Proof::read_cfg(reader, &500)?;
-        let state_proof_ops = Vec::read_range(reader, 0..=500)?;
-        let events_proof = Proof::read_cfg(reader, &500)?;
-        let events_proof_ops = Vec::read_range(reader, 0..=500)?;
+        let state_proof = Proof::read_cfg(reader, &MAX_PROOF_NODES)?;
+        let state_proof_ops = Vec::read_range(reader, 0..=MAX_PROOF_OPS)?;
+        let events_proof = Proof::read_cfg(reader, &MAX_PROOF_NODES)?;
+        let events_proof_ops = Vec::read_range(reader, 0..=MAX_PROOF_OPS)?;
         Ok(Self {
             progress,
             certificate,
@@ -165,29 +236,38 @@ pub struct Events {
 }
 
 impl Events {
-    pub fn verify(&self, identity: &Identity) -> bool {
+    pub fn verify(&self, identity: &Identity) -> Result<(), VerifyError> {
         // Verify the signature
         if !self.certificate.verify(NAMESPACE, identity) {
-            return false;
+            return Err(VerifyError::InvalidSignature);
         }
         if self.progress.digest() != self.certificate.item.digest {
-            return false;
+            return Err(VerifyError::ProgressDigestMismatch);
         }
 
         // Verify the events proof
-        if self.progress.events_start_op + self.events_proof_ops.len() as u64
-            != self.progress.events_end_op
-        {
-            return false;
+        let ops_len = self.events_proof_ops.len();
+        if self.progress.events_start_op + ops_len as u64 != self.progress.events_end_op {
+            return Err(VerifyError::EventsOpsRangeMismatch {
+                start: self.progress.events_start_op,
+                end: self.progress.events_end_op,
+                ops_len,
+            });
         }
         let mut hasher = Standard::<Sha256>::new();
-        verify_proof(
+        if verify_proof(
             &mut hasher,
             &self.events_proof,
             self.progress.events_start_op,
             &self.events_proof_ops,
             &self.progress.events_root,
-        )
+        ) {
+            Ok(())
+        } else {
+            Err(VerifyError::EventsProofInvalid(
+                "proof verification failed".to_string(),
+            ))
+        }
     }
 }
 impl Write for Events {
@@ -205,8 +285,8 @@ impl Read for Events {
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
         let progress = Progress::read(reader)?;
         let certificate = Certificate::read(reader)?;
-        let events_proof = Proof::read_cfg(reader, &500)?;
-        let events_proof_ops = Vec::read_range(reader, 0..=500)?;
+        let events_proof = Proof::read_cfg(reader, &MAX_PROOF_NODES)?;
+        let events_proof_ops = Vec::read_range(reader, 0..=MAX_PROOF_OPS)?;
         Ok(Self {
             progress,
             certificate,
@@ -234,24 +314,28 @@ pub struct Lookup {
 }
 
 impl Lookup {
-    pub fn verify(&self, identity: &Identity) -> bool {
+    pub fn verify(&self, identity: &Identity) -> Result<(), VerifyError> {
         // Verify the signature
         if !self.certificate.verify(NAMESPACE, identity) {
-            return false;
+            return Err(VerifyError::InvalidSignature);
         }
         if self.progress.digest() != self.certificate.item.digest {
-            return false;
+            return Err(VerifyError::ProgressDigestMismatch);
         }
 
         // Verify the proof
         let mut hasher = Standard::<Sha256>::new();
-        verify_proof(
+        if verify_proof(
             &mut hasher,
             &self.proof,
             self.location,
             std::slice::from_ref(&self.operation),
             &self.progress.state_root,
-        )
+        ) {
+            Ok(())
+        } else {
+            Err(VerifyError::LookupProofInvalid)
+        }
     }
 }
 
@@ -271,7 +355,7 @@ impl Read for Lookup {
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
         let progress = Progress::read(reader)?;
         let certificate = Certificate::read(reader)?;
-        let proof = Proof::read_cfg(reader, &500)?;
+        let proof = Proof::read_cfg(reader, &MAX_PROOF_NODES)?;
         let location = u64::read(reader)?;
         let operation = Variable::read(reader)?;
         Ok(Self {
@@ -303,30 +387,38 @@ pub struct FilteredEvents {
 }
 
 impl FilteredEvents {
-    pub fn verify(&self, identity: &Identity) -> bool {
+    pub fn verify(&self, identity: &Identity) -> Result<(), VerifyError> {
         // Verify the signature
         if !self.certificate.verify(NAMESPACE, identity) {
-            return false;
+            return Err(VerifyError::InvalidSignature);
         }
         if self.progress.digest() != self.certificate.item.digest {
-            return false;
+            return Err(VerifyError::ProgressDigestMismatch);
         }
 
         // Ensure all operations are within the range of the events proof
         for (loc, _) in &self.events_proof_ops {
             if *loc < self.progress.events_start_op || *loc > self.progress.events_end_op {
-                return false;
+                return Err(VerifyError::FilteredEventsOutOfRange {
+                    loc: *loc,
+                    start: self.progress.events_start_op,
+                    end: self.progress.events_end_op,
+                });
             }
         }
 
         // Verify the multi-proof for the filtered operations
         let mut hasher = Standard::<Sha256>::new();
-        verify_multi_proof(
+        if verify_multi_proof(
             &mut hasher,
             &self.events_proof,
             &self.events_proof_ops,
             &self.progress.events_root,
-        )
+        ) {
+            Ok(())
+        } else {
+            Err(VerifyError::FilteredEventsProofInvalid)
+        }
     }
 }
 
@@ -345,8 +437,8 @@ impl Read for FilteredEvents {
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
         let progress = Progress::read(reader)?;
         let certificate = Certificate::read(reader)?;
-        let events_proof = Proof::read_cfg(reader, &500)?;
-        let events_proof_ops = Vec::read_range(reader, 0..=500)?;
+        let events_proof = Proof::read_cfg(reader, &MAX_PROOF_NODES)?;
+        let events_proof_ops = Vec::read_range(reader, 0..=MAX_PROOF_OPS)?;
         Ok(Self {
             progress,
             certificate,
@@ -529,7 +621,7 @@ impl Read for Pending {
     type Cfg = ();
 
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let transactions = Vec::<Transaction>::read_range(reader, 1..=MAX_SUBMISSION_TRANSACTIONS)?;
+        let transactions = Vec::<Transaction>::read_range(reader, 0..=MAX_SUBMISSION_TRANSACTIONS)?;
         Ok(Self { transactions })
     }
 }

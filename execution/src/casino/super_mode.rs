@@ -179,7 +179,7 @@ pub fn generate_craps_multipliers(rng: &mut GameRng) -> Vec<SuperMultiplier> {
         mults.push(SuperMultiplier {
             id: num,
             multiplier,
-            super_type: SuperType::Number,
+            super_type: SuperType::Total,
         });
     }
     mults
@@ -857,7 +857,7 @@ mod tests {
         for m in &mults {
             assert!([4, 5, 6, 8, 9, 10].contains(&m.id));
             assert!(m.multiplier >= 3 && m.multiplier <= 25);
-            assert_eq!(m.super_type, SuperType::Number);
+            assert_eq!(m.super_type, SuperType::Total);
         }
     }
 

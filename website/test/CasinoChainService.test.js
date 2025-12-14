@@ -7,6 +7,7 @@ import {
   serializeCasinoGameMove,
   serializeCasinoToggleShield,
   serializeCasinoToggleDouble,
+  serializeCasinoToggleSuper,
   serializeCasinoJoinTournament,
   deserializeCasinoGameStarted,
   deserializeCasinoGameMoved,
@@ -257,6 +258,22 @@ describe('Instruction Serialization', () => {
       const result = serializeCasinoToggleDouble();
       assert.strictEqual(result.length, 1, 'Should be 1 byte');
       assert.strictEqual(result[0], 15, 'Should be tag 15');
+    });
+  });
+
+  describe('serializeCasinoToggleSuper', () => {
+    test('should serialize with just tag 30', () => {
+      const result = serializeCasinoToggleSuper();
+
+      const expected = new Uint8Array([30]);
+
+      assertBytesEqual(result, expected, 'CasinoToggleSuper serialization');
+    });
+
+    test('should always produce single byte', () => {
+      const result = serializeCasinoToggleSuper();
+      assert.strictEqual(result.length, 1, 'Should be 1 byte');
+      assert.strictEqual(result[0], 30, 'Should be tag 30');
     });
   });
 

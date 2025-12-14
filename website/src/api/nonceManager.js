@@ -385,6 +385,7 @@ export class NonceManager {
       const nonce = this.getNextNonce();
 
       try {
+        console.log('[NonceManager] submit', { txType, nonce, publicKey: this.publicKeyHex });
         // Create the transaction with the nonce
         const txData = createTxFn(nonce);
 
@@ -398,6 +399,7 @@ export class NonceManager {
         const result = await this.client.submitTransaction(txData);
 
         if (result.status === 'accepted') {
+          console.log('[NonceManager] accepted', { txType, nonce, publicKey: this.publicKeyHex });
           // Increment nonce for next transaction
           this.incrementNonce();
         } else {
@@ -512,6 +514,17 @@ export class NonceManager {
     return this.submitTransaction(
       (nonce) => this.wasm.createCasinoToggleDoubleTransaction(nonce),
       'casinoToggleDouble'
+    );
+  }
+
+  /**
+   * Submit a casino toggle super transaction.
+   * @returns {Promise<{status: string}>} Transaction result
+   */
+  async submitCasinoToggleSuper() {
+    return this.submitTransaction(
+      (nonce) => this.wasm.createCasinoToggleSuperTransaction(nonce),
+      'casinoToggleSuper'
     );
   }
 

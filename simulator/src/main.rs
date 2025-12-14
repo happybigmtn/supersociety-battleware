@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::Parser;
 use commonware_codec::DecodeExt;
 use nullspace_simulator::{Api, Simulator};
@@ -16,7 +17,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     // Parse args
     let args = Args::parse();
 
@@ -26,9 +27,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // Parse identity
-    let bytes = commonware_utils::from_hex(&args.identity).ok_or("Invalid identity hex format")?;
+    let bytes =
+        commonware_utils::from_hex(&args.identity).context("invalid identity hex format")?;
     let identity: Identity =
-        Identity::decode(&mut bytes.as_slice()).map_err(|_| "Failed to decode identity")?;
+        Identity::decode(&mut bytes.as_slice()).context("failed to decode identity")?;
 
     let simulator = Arc::new(Simulator::new(identity));
     let api = Api::new(simulator);
@@ -36,13 +38,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start server
     let addr = format!("0.0.0.0:{}", args.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .with_context(|| format!("failed to bind {addr}"))?;
     info!("Listening on {}", addr);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await?;
+    .await
+    .context("axum server error")?;
 
     Ok(())
 }

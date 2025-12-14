@@ -1957,6 +1957,7 @@ dependencies = [
 name = "nullspace-execution"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "bytes",
  "commonware-codec",
  "commonware-consensus",
@@ -1974,6 +1975,7 @@ dependencies = [
 name = "nullspace-node"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "bytes",
  "clap",
  "commonware-broadcast",
@@ -2007,6 +2009,7 @@ dependencies = [
 name = "nullspace-simulator"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "axum 0.7.9",
  "bytes",
  "clap",

@@ -1,6 +1,7 @@
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, FixedSize, Read, ReadExt, Write};
 use commonware_cryptography::ed25519::PublicKey;
+use commonware_utils::{from_hex, hex};
 use serde::{
     de::{self, MapAccess, SeqAccess, Visitor},
     ser::SerializeStruct,
@@ -25,24 +26,12 @@ pub struct TokenMetadata {
 
 // Helper to encode hex
 fn hex_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        write!(&mut s, "{:02x}", b).unwrap();
-    }
-    s
+    hex(bytes)
 }
 
 // Helper to decode hex
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 {
-        return Err("invalid hex string length".to_string());
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
-        .collect::<Result<Vec<u8>, _>>()
-        .map_err(|e| e.to_string())
+    from_hex(s).ok_or_else(|| "invalid hex string".to_string())
 }
 
 impl Default for TokenMetadata {
@@ -305,6 +294,8 @@ pub struct TokenAccount {
     pub allowances: Vec<(PublicKey, u64)>,
 }
 
+const MAX_ALLOWANCES_JSON_PREALLOC: usize = 1024;
+
 impl TokenAccount {
     pub fn allowance(&self, spender: &PublicKey) -> u64 {
         self.allowances
@@ -401,7 +392,8 @@ impl<'de> Deserialize<'de> for TokenAccount {
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(2, &self))?;
 
-                let mut allowances = Vec::with_capacity(allowances_raw.len());
+                let mut allowances =
+                    Vec::with_capacity(allowances_raw.len().min(MAX_ALLOWANCES_JSON_PREALLOC));
                 for (s, amt) in allowances_raw {
                     let bytes = hex_decode(&s).map_err(de::Error::custom)?;
                     let mut reader = &bytes[..];
@@ -442,7 +434,9 @@ impl<'de> Deserialize<'de> for TokenAccount {
                                 return Err(de::Error::duplicate_field("allowances"));
                             }
                             let allowances_raw: Vec<(String, u64)> = map.next_value()?;
-                            let mut list = Vec::with_capacity(allowances_raw.len());
+                            let mut list = Vec::with_capacity(
+                                allowances_raw.len().min(MAX_ALLOWANCES_JSON_PREALLOC),
+                            );
                             for (s, amt) in allowances_raw {
                                 let bytes = hex_decode(&s).map_err(de::Error::custom)?;
                                 let mut reader = &bytes[..];
@@ -556,7 +550,10 @@ impl Read for TokenAccount {
         let balance = u64::read(reader)?;
         let frozen = bool::read(reader)?;
         let allowance_count = u32::read(reader)?;
-        let mut allowances = Vec::with_capacity(allowance_count as usize);
+        let entry_size = PublicKey::SIZE + u64::SIZE;
+        let max_possible = reader.remaining() / entry_size;
+        let initial_capacity = (allowance_count as usize).min(max_possible);
+        let mut allowances = Vec::with_capacity(initial_capacity);
         for _ in 0..allowance_count {
             let spender = PublicKey::read(reader)?;
             let amount = u64::read(reader)?;

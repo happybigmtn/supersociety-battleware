@@ -15,6 +15,7 @@ export interface ExplorerTransaction {
   position: number;
   public_key: string;
   nonce: number;
+  description?: string | null;
   instruction: string;
 }
 

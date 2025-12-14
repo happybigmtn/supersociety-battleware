@@ -31,8 +31,10 @@ export interface Player {
   rank: number;
   activeShield: boolean;
   activeDouble: boolean;
+  activeSuper?: boolean;
   activeSession: bigint | null;
   lastDepositBlock: bigint;
+  auraMeter?: number;
 }
 
 /**
@@ -47,6 +49,11 @@ export interface GameSession {
   moveCount: number;
   createdAt: bigint;
   isComplete: boolean;
+  superMode?: {
+    isActive: boolean;
+    streakLevel: number;
+    multipliers: Array<{ id: number; multiplier: number; superType: string }>;
+  } | null;
   isTournament: boolean;
   tournamentId: bigint | null;
 }

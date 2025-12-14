@@ -85,6 +85,8 @@ pub struct Config<B: Blocker<PublicKey = PublicKey>, I: Indexer> {
     pub indexer: I,
     pub execution_concurrency: usize,
     pub max_uploads_outstanding: usize,
+    pub mempool_max_backlog: usize,
+    pub mempool_max_transactions: usize,
 }
 
 /// The engine that drives the [application].
@@ -161,6 +163,8 @@ impl<
                     buffer_pool: buffer_pool.clone(),
                     indexer: cfg.indexer.clone(),
                     execution_concurrency: cfg.execution_concurrency,
+                    mempool_max_backlog: cfg.mempool_max_backlog,
+                    mempool_max_transactions: cfg.mempool_max_transactions,
                 },
             );
 

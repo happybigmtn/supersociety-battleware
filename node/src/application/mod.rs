@@ -55,4 +55,10 @@ pub struct Config<I: Indexer> {
 
     /// The number of threads to use for execution.
     pub execution_concurrency: usize,
+
+    /// The maximum number of transactions a single account can have in the mempool.
+    pub mempool_max_backlog: usize,
+
+    /// The maximum number of transactions in the mempool.
+    pub mempool_max_transactions: usize,
 }

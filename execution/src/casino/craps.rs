@@ -1,13 +1,15 @@
 //! Enhanced Craps game implementation with a multi-bet menu.
 //!
 //! State blob format:
-//! [version:u8=1]
+//! [version:u8=2]
 //! [phase:u8]
 //! [main_point:u8]
 //! [d1:u8] [d2:u8]
 //! [made_points_mask:u8] (Fire Bet: bits for 4/5/6/8/9/10 made)
+//! [epoch_point_established:u8] (0/1, becomes 1 after the first point is established in an epoch)
 //! [bet_count:u8]
 //! [bets:CrapsBetEntry×count]
+//! [field_paytable:u8]? [buy_commission_timing:u8]? (optional, post-bets rules bytes)
 //!
 //! Each CrapsBetEntry (19 bytes):
 //! [bet_type:u8] [target:u8] [status:u8] [amount:u64 BE] [odds_amount:u64 BE]
@@ -26,10 +28,65 @@ use super::super_mode::apply_super_multiplier_total;
 use super::{CasinoGame, GameError, GameResult, GameRng};
 use nullspace_types::casino::GameSession;
 
-const STATE_VERSION: u8 = 1;
+const STATE_VERSION_V1: u8 = 1;
+const STATE_VERSION: u8 = 2;
 const MAX_BETS: usize = 20;
 const BUY_COMMISSION_BPS: u64 = 500; // 5.00%
 const BUY_COMMISSION_DENOM: u64 = 10_000;
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldPaytable {
+    /// 2 and 12 pay double (2:1).
+    Double2And12 = 0,
+    /// 2 pays double (2:1) and 12 pays triple (3:1).
+    Double2Triple12 = 1,
+}
+
+impl Default for FieldPaytable {
+    fn default() -> Self {
+        Self::Double2And12
+    }
+}
+
+impl TryFrom<u8> for FieldPaytable {
+    type Error = ();
+
+    fn try_from(v: u8) -> Result<Self, ()> {
+        match v {
+            0 => Ok(FieldPaytable::Double2And12),
+            1 => Ok(FieldPaytable::Double2Triple12),
+            _ => Err(()),
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BuyCommissionTiming {
+    /// Commission is charged at bet placement (up-front).
+    AtPlacement = 0,
+    /// Commission is charged only when the buy bet wins.
+    OnWin = 1,
+}
+
+impl Default for BuyCommissionTiming {
+    fn default() -> Self {
+        Self::AtPlacement
+    }
+}
+
+impl TryFrom<u8> for BuyCommissionTiming {
+    type Error = ();
+
+    fn try_from(v: u8) -> Result<Self, ()> {
+        match v {
+            0 => Ok(BuyCommissionTiming::AtPlacement),
+            1 => Ok(BuyCommissionTiming::OnWin),
+            _ => Err(()),
+        }
+    }
+}
 
 // All Tall Small (ATS) pay table ("to 1").
 const ATS_SMALL_PAYOUT_TO_1: u64 = 34;
@@ -196,14 +253,17 @@ struct CrapsState {
     d1: u8,
     d2: u8,
     made_points_mask: u8,
+    epoch_point_established: bool,
+    field_paytable: FieldPaytable,
+    buy_commission_timing: BuyCommissionTiming,
     bets: Vec<CrapsBet>,
 }
 
 impl CrapsState {
     /// Serialize state to blob
     fn to_blob(&self) -> Vec<u8> {
-        // Capacity: 7 (version, phase, main_point, d1, d2, mask, bet_count) + bets (19 bytes each)
-        let capacity = 7 + (self.bets.len() * 19);
+        // Capacity: 8 (header) + bets (19 bytes each) + 2 (optional rules bytes)
+        let capacity = 8 + (self.bets.len() * 19) + 2;
         let mut blob = Vec::with_capacity(capacity);
         blob.push(STATE_VERSION);
         blob.push(self.phase as u8);
@@ -211,11 +271,16 @@ impl CrapsState {
         blob.push(self.d1);
         blob.push(self.d2);
         blob.push(self.made_points_mask);
+        blob.push(self.epoch_point_established as u8);
         blob.push(self.bets.len() as u8);
 
         for bet in &self.bets {
             blob.extend_from_slice(&bet.to_bytes());
         }
+
+        // Post-bets optional rules bytes (kept at the end so legacy parsers remain compatible).
+        blob.push(self.field_paytable as u8);
+        blob.push(self.buy_commission_timing as u8);
 
         blob
     }
@@ -226,16 +291,65 @@ impl CrapsState {
             return None;
         }
 
-        if blob[0] != STATE_VERSION {
-            return None;
-        }
+        let version = blob[0];
 
-        let phase = Phase::try_from(blob[1]).ok()?;
-        let main_point = blob[2];
-        let d1 = blob[3];
-        let d2 = blob[4];
-        let made_points_mask = blob[5];
-        let bet_count = blob[6] as usize;
+        let (
+            phase,
+            main_point,
+            d1,
+            d2,
+            made_points_mask,
+            epoch_point_established,
+            bet_count,
+            header_len,
+        ) = if version == STATE_VERSION {
+            if blob.len() < 8 {
+                return None;
+            }
+            let phase = Phase::try_from(blob[1]).ok()?;
+            let main_point = blob[2];
+            let d1 = blob[3];
+            let d2 = blob[4];
+            let made_points_mask = blob[5];
+            let epoch_point_established = blob[6] != 0;
+            let bet_count = blob[7] as usize;
+            (
+                phase,
+                main_point,
+                d1,
+                d2,
+                made_points_mask,
+                epoch_point_established,
+                bet_count,
+                8usize,
+            )
+        } else if version == STATE_VERSION_V1 {
+            // v1 header (7 bytes): [v=1][phase][main_point][d1][d2][made_points_mask][bet_count]
+            let phase = Phase::try_from(blob[1]).ok()?;
+            let main_point = blob[2];
+            let d1 = blob[3];
+            let d2 = blob[4];
+            let made_points_mask = blob[5];
+            let bet_count = blob[6] as usize;
+
+            // Best-effort derivation for legacy states: if we're currently in Point phase
+            // or have ever made a point, treat the epoch as having established a point.
+            let epoch_point_established =
+                phase == Phase::Point || main_point != 0 || made_points_mask != 0;
+
+            (
+                phase,
+                main_point,
+                d1,
+                d2,
+                made_points_mask,
+                epoch_point_established,
+                bet_count,
+                7usize,
+            )
+        } else {
+            return None;
+        };
 
         // Validate bet count against maximum to prevent DoS via large allocations
         if bet_count > MAX_BETS {
@@ -243,13 +357,13 @@ impl CrapsState {
         }
 
         // Validate we have enough bytes for all bets before allocating
-        let required_len = 7 + (bet_count * 19);
+        let required_len = header_len + (bet_count * 19);
         if blob.len() < required_len {
             return None;
         }
 
         let mut bets = Vec::with_capacity(bet_count);
-        let mut offset = 7;
+        let mut offset = header_len;
 
         for _ in 0..bet_count {
             if offset + 19 > blob.len() {
@@ -260,12 +374,24 @@ impl CrapsState {
             offset += 19;
         }
 
+        let (field_paytable, buy_commission_timing) = if blob.len() >= offset + 2 {
+            (
+                FieldPaytable::try_from(blob[offset]).ok()?,
+                BuyCommissionTiming::try_from(blob[offset + 1]).ok()?,
+            )
+        } else {
+            (FieldPaytable::default(), BuyCommissionTiming::default())
+        };
+
         Some(CrapsState {
             phase,
             main_point,
             d1,
             d2,
             made_points_mask,
+            epoch_point_established,
+            field_paytable,
+            buy_commission_timing,
             bets,
         })
     }
@@ -322,11 +448,19 @@ fn calculate_odds_payout(point: u8, odds_amount: u64, is_pass: bool) -> u64 {
 }
 
 /// Calculate field bet return (TOTAL RETURN: stake + winnings).
-fn calculate_field_payout(total: u8, amount: u64) -> u64 {
-    match total {
-        2 | 12 => amount.saturating_mul(3), // 2:1 -> 3x total
-        3 | 4 | 9 | 10 | 11 => amount.saturating_mul(2), // 1:1 -> 2x total
-        _ => 0,
+fn calculate_field_payout(total: u8, amount: u64, paytable: FieldPaytable) -> u64 {
+    match paytable {
+        FieldPaytable::Double2And12 => match total {
+            2 | 12 => amount.saturating_mul(3), // 2:1 -> 3x total
+            3 | 4 | 9 | 10 | 11 => amount.saturating_mul(2), // 1:1 -> 2x total
+            _ => 0,
+        },
+        FieldPaytable::Double2Triple12 => match total {
+            2 => amount.saturating_mul(3),  // 2:1 -> 3x total
+            12 => amount.saturating_mul(4), // 3:1 -> 4x total
+            3 | 4 | 9 | 10 | 11 => amount.saturating_mul(2),
+            _ => 0,
+        },
     }
 }
 
@@ -386,7 +520,7 @@ fn calculate_buy_payout(target: u8, amount: u64, hit: bool) -> u64 {
 
     // Fair odds on the number.
     let winnings = match target {
-        4 | 10 => amount.saturating_mul(2), // 2:1
+        4 | 10 => amount.saturating_mul(2),                  // 2:1
         5 | 9 => amount.saturating_mul(3).saturating_div(2), // 3:2
         6 | 8 => amount.saturating_mul(6).saturating_div(5), // 6:5
         _ => 0,
@@ -491,7 +625,7 @@ fn process_roll(state: &mut CrapsState, d1: u8, d2: u8) -> Vec<BetResult> {
         if bet.bet_type == BetType::Field {
             results.push(BetResult {
                 bet_idx: idx,
-                return_amount: calculate_field_payout(total, bet.amount),
+                return_amount: calculate_field_payout(total, bet.amount, state.field_paytable),
                 wagered: bet.amount,
                 resolved: true,
             });
@@ -572,19 +706,38 @@ fn process_roll(state: &mut CrapsState, d1: u8, d2: u8) -> Vec<BetResult> {
                 }
             }
             BetType::Buy => {
-                let commission = calculate_buy_commission(bet.amount);
                 if total == bet.target {
+                    let commission = calculate_buy_commission(bet.amount);
+                    let return_amount = match state.buy_commission_timing {
+                        BuyCommissionTiming::AtPlacement => {
+                            // Commission already paid at placement.
+                            calculate_buy_payout(bet.target, bet.amount, true)
+                        }
+                        BuyCommissionTiming::OnWin => {
+                            calculate_buy_payout(bet.target, bet.amount, true)
+                                .saturating_sub(commission)
+                        }
+                    };
+                    let wagered = match state.buy_commission_timing {
+                        BuyCommissionTiming::AtPlacement => bet.amount.saturating_add(commission),
+                        BuyCommissionTiming::OnWin => bet.amount,
+                    };
                     results.push(BetResult {
                         bet_idx: idx,
-                        return_amount: calculate_buy_payout(bet.target, bet.amount, true),
-                        wagered: bet.amount.saturating_add(commission),
+                        return_amount,
+                        wagered,
                         resolved: true,
                     });
                 } else if total == 7 {
+                    let commission = calculate_buy_commission(bet.amount);
+                    let wagered = match state.buy_commission_timing {
+                        BuyCommissionTiming::AtPlacement => bet.amount.saturating_add(commission),
+                        BuyCommissionTiming::OnWin => bet.amount,
+                    };
                     results.push(BetResult {
                         bet_idx: idx,
                         return_amount: 0,
-                        wagered: bet.amount.saturating_add(commission),
+                        wagered,
                         resolved: true,
                     });
                 }
@@ -742,7 +895,9 @@ fn process_roll(state: &mut CrapsState, d1: u8, d2: u8) -> Vec<BetResult> {
         PhaseEvent::PointEstablished(point) => {
             // Fix pass/don't pass odds tracking: set bet.target to the main point.
             for bet in state.bets.iter_mut() {
-                if matches!(bet.bet_type, BetType::Pass | BetType::DontPass) && bet.status == BetStatus::On {
+                if matches!(bet.bet_type, BetType::Pass | BetType::DontPass)
+                    && bet.status == BetStatus::On
+                {
                     bet.target = point;
                 }
             }
@@ -944,6 +1099,7 @@ fn update_phase(state: &mut CrapsState, total: u8) -> PhaseEvent {
             if ![2, 3, 7, 11, 12].contains(&total) {
                 state.phase = Phase::Point;
                 state.main_point = total;
+                state.epoch_point_established = true;
                 PhaseEvent::PointEstablished(total)
             } else {
                 PhaseEvent::None
@@ -958,6 +1114,7 @@ fn update_phase(state: &mut CrapsState, total: u8) -> PhaseEvent {
             } else if total == 7 {
                 state.phase = Phase::ComeOut;
                 state.main_point = 0;
+                state.epoch_point_established = false;
                 PhaseEvent::SevenOut
             } else {
                 PhaseEvent::None
@@ -980,6 +1137,9 @@ impl CasinoGame for Craps {
             d1: 0,
             d2: 0,
             made_points_mask: 0,
+            epoch_point_established: false,
+            field_paytable: FieldPaytable::default(),
+            buy_commission_timing: BuyCommissionTiming::default(),
             bets: Vec::new(),
         };
         session.state_blob = state.to_blob();
@@ -1003,6 +1163,9 @@ impl CasinoGame for Craps {
                 d1: 0,
                 d2: 0,
                 made_points_mask: 0,
+                epoch_point_established: false,
+                field_paytable: FieldPaytable::default(),
+                buy_commission_timing: BuyCommissionTiming::default(),
                 bets: Vec::new(),
             }
         } else {
@@ -1092,8 +1255,14 @@ impl CasinoGame for Craps {
                     bet_type,
                     BetType::AtsSmall | BetType::AtsTall | BetType::AtsAll
                 ) {
-                    // ATS bets are tracked for the entire shooter hand. Require placement before the first roll.
-                    if state.d1 != 0 || state.d2 != 0 {
+                    // ATS bets are tracked for the entire shooter epoch.
+                    // Allow placement before any roll, and also after a 7 (no-point roll) so long as a point has not yet
+                    // been established in the current epoch.
+                    let has_rolled = state.d1 != 0 || state.d2 != 0;
+                    let last_total = state.d1.saturating_add(state.d2);
+                    let can_place = !state.epoch_point_established
+                        && (!has_rolled || (state.phase == Phase::ComeOut && last_total == 7));
+                    if !can_place {
                         return Err(GameError::InvalidMove);
                     }
                 }
@@ -1115,7 +1284,12 @@ impl CasinoGame for Craps {
                 session.state_blob = state.to_blob();
 
                 let deduction = if bet_type == BetType::Buy {
-                    amount.saturating_add(calculate_buy_commission(amount))
+                    match state.buy_commission_timing {
+                        BuyCommissionTiming::AtPlacement => {
+                            amount.saturating_add(calculate_buy_commission(amount))
+                        }
+                        BuyCommissionTiming::OnWin => amount,
+                    }
                 } else {
                     amount
                 };
@@ -1227,7 +1401,8 @@ impl CasinoGame for Craps {
                     // Game continues with active bets
                     // Credit any wins/pushes this roll; losses were already deducted at placement.
                     if total_return > 0 {
-                        let payout = i64::try_from(total_return).map_err(|_| GameError::InvalidMove)?;
+                        let payout =
+                            i64::try_from(total_return).map_err(|_| GameError::InvalidMove)?;
                         Ok(GameResult::ContinueWithUpdate { payout })
                     } else {
                         Ok(GameResult::Continue)
@@ -1303,6 +1478,9 @@ mod tests {
             d1: 3,
             d2: 3,
             made_points_mask: 0b001011, // arbitrary
+            epoch_point_established: true,
+            field_paytable: FieldPaytable::default(),
+            buy_commission_timing: BuyCommissionTiming::default(),
             bets: vec![
                 CrapsBet {
                     bet_type: BetType::Pass,
@@ -1326,23 +1504,43 @@ mod tests {
         assert_eq!(blob[1], Phase::Point as u8);
         assert_eq!(blob[2], 6);
         assert_eq!(blob[5], state.made_points_mask);
-        assert_eq!(blob[6], 2); // bet count
+        assert_eq!(blob[6], 1); // epoch_point_established
+        assert_eq!(blob[7], 2); // bet count
 
         let deserialized = CrapsState::from_blob(&blob).expect("Failed to parse state");
         assert_eq!(deserialized.phase, state.phase);
         assert_eq!(deserialized.main_point, state.main_point);
         assert_eq!(deserialized.made_points_mask, state.made_points_mask);
+        assert_eq!(
+            deserialized.epoch_point_established,
+            state.epoch_point_established
+        );
         assert_eq!(deserialized.bets.len(), 2);
     }
 
     #[test]
     fn test_field_payout() {
         // Payouts are TOTAL RETURN (stake + winnings)
-        assert_eq!(calculate_field_payout(2, 100), 300); // 2:1 -> 3x total
-        assert_eq!(calculate_field_payout(12, 100), 300); // 2:1 -> 3x total
-        assert_eq!(calculate_field_payout(3, 100), 200); // 1:1 -> 2x total
-        assert_eq!(calculate_field_payout(11, 100), 200); // 1:1 -> 2x total
-        assert_eq!(calculate_field_payout(7, 100), 0); // lose
+        assert_eq!(
+            calculate_field_payout(2, 100, FieldPaytable::Double2And12),
+            300
+        ); // 2:1 -> 3x total
+        assert_eq!(
+            calculate_field_payout(12, 100, FieldPaytable::Double2And12),
+            300
+        ); // 2:1 -> 3x total
+        assert_eq!(
+            calculate_field_payout(3, 100, FieldPaytable::Double2And12),
+            200
+        ); // 1:1 -> 2x total
+        assert_eq!(
+            calculate_field_payout(11, 100, FieldPaytable::Double2And12),
+            200
+        ); // 1:1 -> 2x total
+        assert_eq!(
+            calculate_field_payout(7, 100, FieldPaytable::Double2And12),
+            0
+        ); // lose
     }
 
     #[test]
@@ -1359,7 +1557,7 @@ mod tests {
         // NEXT pays with a 1% commission on winnings.
         assert_eq!(calculate_next_payout(7, 7, 100), 595); // winnings 500 -> -5 commission
         assert_eq!(calculate_next_payout(2, 2, 100), 3565); // winnings 3500 -> -35 commission
-        // Miss
+                                                            // Miss
         assert_eq!(calculate_next_payout(7, 6, 100), 0);
     }
 
@@ -1386,6 +1584,9 @@ mod tests {
             d1: 0,
             d2: 0,
             made_points_mask: 0,
+            epoch_point_established: false,
+            field_paytable: FieldPaytable::default(),
+            buy_commission_timing: BuyCommissionTiming::default(),
             bets: vec![CrapsBet {
                 bet_type: BetType::AtsSmall,
                 target: 0,
@@ -1417,6 +1618,9 @@ mod tests {
             d1: 0,
             d2: 0,
             made_points_mask: 0,
+            epoch_point_established: true,
+            field_paytable: FieldPaytable::default(),
+            buy_commission_timing: BuyCommissionTiming::default(),
             bets: vec![CrapsBet {
                 bet_type: BetType::AtsTall,
                 target: 0,
@@ -1686,6 +1890,9 @@ mod tests {
             d1: 0,
             d2: 0,
             made_points_mask: 0,
+            epoch_point_established: false,
+            field_paytable: FieldPaytable::default(),
+            buy_commission_timing: BuyCommissionTiming::default(),
             bets: vec![CrapsBet {
                 bet_type: BetType::Fire,
                 target: 0,
@@ -1696,7 +1903,16 @@ mod tests {
         };
 
         // Make 4, 5, 6, 8.
-        for (d1, d2) in [(2, 2), (2, 2), (2, 3), (2, 3), (3, 3), (3, 3), (4, 4), (4, 4)] {
+        for (d1, d2) in [
+            (2, 2),
+            (2, 2),
+            (2, 3),
+            (2, 3),
+            (3, 3),
+            (3, 3),
+            (4, 4),
+            (4, 4),
+        ] {
             process_roll(&mut state, d1, d2);
         }
         assert_eq!(state.made_points_mask.count_ones(), 4);
@@ -1717,6 +1933,9 @@ mod tests {
             d1: 0,
             d2: 0,
             made_points_mask: 0,
+            epoch_point_established: false,
+            field_paytable: FieldPaytable::default(),
+            buy_commission_timing: BuyCommissionTiming::default(),
             bets: vec![CrapsBet {
                 bet_type: BetType::Fire,
                 target: 0,

@@ -20,6 +20,9 @@ impl Decimal {
 
     /// Create from a fraction (numerator / denominator)
     pub fn from_frac(numerator: i32, denominator: i32) -> Self {
+        if denominator == 0 {
+            return Decimal(0);
+        }
         let num = Decimal::from_int(numerator);
         let den = Decimal::from_int(denominator);
         num.div(den)
@@ -47,17 +50,25 @@ impl Decimal {
 
     /// Divide by an integer
     pub fn div_int(self, other: i32) -> Self {
+        if other == 0 {
+            return Decimal(0);
+        }
         Decimal(self.0 / other as i64)
     }
 
     /// Multiply two fixed-point numbers
     pub fn mul(self, other: Self) -> Self {
-        Decimal((self.0 * other.0) / SCALE as i64)
+        let scaled = (self.0 as i128) * (other.0 as i128);
+        Decimal((scaled / SCALE as i128) as i64)
     }
 
     /// Divide two fixed-point numbers
     pub fn div(self, other: Self) -> Self {
-        Decimal((self.0 * SCALE as i64) / other.0)
+        if other.0 == 0 {
+            return Decimal(0);
+        }
+        let scaled = (self.0 as i128) * (SCALE as i128);
+        Decimal((scaled / other.0 as i128) as i64)
     }
 }
 
@@ -79,6 +90,20 @@ impl std::ops::Neg for Decimal {
     type Output = Self;
     fn neg(self) -> Self {
         Decimal(-self.0)
+    }
+}
+
+impl std::ops::Mul for Decimal {
+    type Output = Self;
+    fn mul(self, other: Self) -> Self {
+        Decimal::mul(self, other)
+    }
+}
+
+impl std::ops::Div for Decimal {
+    type Output = Self;
+    fn div(self, other: Self) -> Self {
+        Decimal::div(self, other)
     }
 }
 
@@ -213,6 +238,14 @@ mod tests {
         // Test division by integer
         let quot = a.div_int(4);
         assert_eq!(quot.raw(), 25000); // 2.5 * 10000
+    }
+
+    #[test]
+    fn test_division_by_zero_returns_zero() {
+        let a = Decimal::from_int(10);
+        assert_eq!(a.div_int(0).raw(), 0);
+        assert_eq!(a.div(Decimal::from_int(0)).raw(), 0);
+        assert_eq!(Decimal::from_frac(1, 0).raw(), 0);
     }
 
     #[test]

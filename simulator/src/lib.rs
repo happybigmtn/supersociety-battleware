@@ -1,24 +1,29 @@
+#[cfg(feature = "passkeys")]
+use axum::http::HeaderMap;
 use axum::{
     body::Bytes,
     extract::{ws::WebSocketUpgrade, Path, Query, State as AxumState},
-    http::{header, HeaderMap, Method, StatusCode},
+    http::{header, Method, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use commonware_codec::{DecodeExt, Encode, ReadExt};
+use commonware_codec::{DecodeExt, Encode, Read, ReadExt, ReadRangeExt};
 use commonware_consensus::{aggregation::types::Certificate, Viewable};
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig,
     ed25519::{self, PublicKey},
     sha256::Digest,
-    Digestible, PrivateKeyExt, Signer,
+    Digestible,
 };
+#[cfg(feature = "passkeys")]
+use commonware_cryptography::{PrivateKeyExt, Signer};
 use commonware_storage::{
     adb::{
         create_multi_proof, create_proof, create_proof_store_from_digests,
         digests_required_for_proof,
     },
+    mmr::verification::Proof,
     store::operation::{Keyless, Variable},
 };
 use commonware_utils::{from_hex, hex};
@@ -28,19 +33,21 @@ use nullspace_types::{
     execution::{Event, Output, Progress, Seed, Transaction, Value},
     Identity, Query as ChainQuery, NAMESPACE,
 };
+#[cfg(feature = "passkeys")]
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::{Arc, RwLock},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, RwLock};
 use tower_governor::{
     governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
 };
 use tower_http::cors::{Any, CorsLayer};
+#[cfg(feature = "passkeys")]
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -69,6 +76,7 @@ pub struct ExplorerTransaction {
     position: u32,
     public_key: String,
     nonce: u64,
+    description: String,
     instruction: String,
 }
 
@@ -89,21 +97,24 @@ pub struct ExplorerState {
     accounts: HashMap<PublicKey, AccountActivity>,
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PasskeyChallenge {
     challenge: String,
     issued_at_ms: u64,
 }
 
-#[derive(Clone, Serialize)]
+#[cfg(feature = "passkeys")]
+#[derive(Clone)]
 pub struct PasskeyCredential {
     credential_id: String,
     webauthn_public_key: String,
     ed25519_public_key: String,
-    ed25519_private_bytes: Vec<u8>,
+    ed25519_private_key: ed25519::PrivateKey,
     created_at_ms: u64,
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Clone)]
 pub struct PasskeySession {
     token: String,
@@ -112,6 +123,7 @@ pub struct PasskeySession {
     expires_at_ms: u64,
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Default)]
 pub struct PasskeyStore {
     challenges: HashMap<String, PasskeyChallenge>,
@@ -133,6 +145,7 @@ pub struct State {
     submitted_state: HashSet<u64>,
 
     explorer: ExplorerState,
+    #[cfg(feature = "passkeys")]
     passkeys: PasskeyStore,
 }
 
@@ -236,17 +249,102 @@ impl Simulator {
         }
     }
 
-    fn index_block_from_summary(&self, progress: &Progress, ops: &[Keyless<Output>]) {
-        let mut state = match self.state.write() {
-            Ok(state) => state,
-            Err(e) => {
-                tracing::error!(
-                    "Failed to acquire write lock in index_block_from_summary: {}",
-                    e
-                );
-                return;
+    fn describe_game_type(game_type: &nullspace_types::casino::GameType) -> &'static str {
+        use nullspace_types::casino::GameType;
+
+        match game_type {
+            GameType::Baccarat => "Baccarat",
+            GameType::Blackjack => "Blackjack",
+            GameType::CasinoWar => "Casino War",
+            GameType::Craps => "Craps",
+            GameType::VideoPoker => "Video Poker",
+            GameType::HiLo => "Hi-Lo",
+            GameType::Roulette => "Roulette",
+            GameType::SicBo => "Sic Bo",
+            GameType::ThreeCard => "Three Card",
+            GameType::UltimateHoldem => "Ultimate Hold'em",
+        }
+    }
+
+    fn describe_instruction(instruction: &nullspace_types::execution::Instruction) -> String {
+        use nullspace_types::execution::Instruction;
+
+        match instruction {
+            Instruction::CasinoRegister { name } => format!("Register casino player \"{name}\""),
+            Instruction::CasinoDeposit { amount } => format!("Deposit {amount} RNG (faucet)"),
+            Instruction::CasinoStartGame {
+                game_type,
+                bet,
+                session_id,
+            } => format!(
+                "Start {} game (bet {bet} RNG, session {session_id})",
+                Self::describe_game_type(game_type)
+            ),
+            Instruction::CasinoGameMove {
+                session_id,
+                payload,
+            } => {
+                let bytes = payload.len();
+                if bytes == 0 {
+                    format!("Casino game move (session {session_id})")
+                } else {
+                    format!("Casino game move (session {session_id}, {bytes} bytes)")
+                }
             }
-        };
+            Instruction::CasinoToggleShield => "Toggle shield modifier".to_string(),
+            Instruction::CasinoToggleDouble => "Toggle double modifier".to_string(),
+            Instruction::CasinoToggleSuper => "Toggle super mode".to_string(),
+            Instruction::CasinoJoinTournament { tournament_id } => {
+                format!("Join tournament {tournament_id}")
+            }
+            Instruction::CasinoStartTournament {
+                tournament_id,
+                start_time_ms,
+                end_time_ms,
+            } => format!(
+                "Start tournament {tournament_id} (start {start_time_ms}, end {end_time_ms})"
+            ),
+            Instruction::CasinoEndTournament { tournament_id } => {
+                format!("End tournament {tournament_id}")
+            }
+
+            Instruction::Stake { amount, duration } => {
+                format!("Stake {amount} RNG for {duration} blocks")
+            }
+            Instruction::Unstake => "Unstake".to_string(),
+            Instruction::ClaimRewards => "Claim staking rewards".to_string(),
+            Instruction::ProcessEpoch => "Process epoch".to_string(),
+
+            Instruction::CreateVault => "Create vault".to_string(),
+            Instruction::DepositCollateral { amount } => {
+                format!("Deposit {amount} RNG as collateral")
+            }
+            Instruction::BorrowUSDT { amount } => format!("Borrow {amount} vUSDT"),
+            Instruction::RepayUSDT { amount } => format!("Repay {amount} vUSDT"),
+
+            Instruction::Swap {
+                amount_in,
+                min_amount_out,
+                is_buying_rng,
+            } => {
+                if *is_buying_rng {
+                    format!("Swap {amount_in} vUSDT for ≥ {min_amount_out} RNG")
+                } else {
+                    format!("Swap {amount_in} RNG for ≥ {min_amount_out} vUSDT")
+                }
+            }
+            Instruction::AddLiquidity {
+                rng_amount,
+                usdt_amount,
+            } => format!("Add liquidity ({rng_amount} RNG + {usdt_amount} vUSDT)"),
+            Instruction::RemoveLiquidity { shares } => {
+                format!("Remove liquidity ({shares} LP shares)")
+            }
+        }
+    }
+
+    async fn index_block_from_summary(&self, progress: &Progress, ops: &[Keyless<Output>]) {
+        let mut state = self.state.write().await;
 
         if state.explorer.indexed_blocks.contains_key(&progress.height) {
             return;
@@ -274,6 +372,7 @@ impl Simulator {
                         position: idx as u32,
                         public_key: hex(tx.public.as_ref()),
                         nonce: tx.nonce,
+                        description: Self::describe_instruction(&tx.instruction),
                         instruction: format!("{:?}", tx.instruction),
                     };
                     state.explorer.txs_by_hash.insert(digest, entry);
@@ -319,18 +418,13 @@ impl Simulator {
         state.explorer.indexed_blocks.insert(progress.height, block);
     }
 
-    pub fn submit_seed(&self, seed: Seed) {
-        let mut state = match self.state.write() {
-            Ok(state) => state,
-            Err(e) => {
-                tracing::error!("Failed to acquire write lock in submit_seed: {}", e);
+    pub async fn submit_seed(&self, seed: Seed) {
+        {
+            let mut state = self.state.write().await;
+            if state.seeds.insert(seed.view(), seed.clone()).is_some() {
                 return;
             }
-        };
-        if state.seeds.insert(seed.view(), seed.clone()).is_some() {
-            return;
-        }
-        drop(state); // Release lock before broadcasting
+        } // Release lock before broadcasting
         if let Err(e) = self.update_tx.send(InternalUpdate::Seed(seed)) {
             tracing::warn!("Failed to broadcast seed update (no subscribers): {}", e);
         }
@@ -342,14 +436,8 @@ impl Simulator {
         }
     }
 
-    pub fn submit_state(&self, summary: Summary, inner: Vec<(u64, Digest)>) {
-        let mut state = match self.state.write() {
-            Ok(state) => state,
-            Err(e) => {
-                tracing::error!("Failed to acquire write lock in submit_state: {}", e);
-                return;
-            }
-        };
+    pub async fn submit_state(&self, summary: Summary, inner: Vec<(u64, Digest)>) {
+        let mut state = self.state.write().await;
         if !state.submitted_state.insert(summary.progress.height) {
             return;
         }
@@ -393,25 +481,20 @@ impl Simulator {
         );
     }
 
-    pub fn submit_events(&self, summary: Summary, events_digests: Vec<(u64, Digest)>) {
+    pub async fn submit_events(&self, summary: Summary, events_digests: Vec<(u64, Digest)>) {
         let height = summary.progress.height;
 
         // Check if already submitted before acquiring lock
         {
-            let mut state = match self.state.write() {
-                Ok(state) => state,
-                Err(e) => {
-                    tracing::error!("Failed to acquire write lock in submit_events: {}", e);
-                    return;
-                }
-            };
+            let mut state = self.state.write().await;
             if !state.submitted_events.insert(height) {
                 return;
             }
         } // Release lock before broadcasting
 
         // Index blocks/transactions for explorer consumers
-        self.index_block_from_summary(&summary.progress, &summary.events_proof_ops);
+        self.index_block_from_summary(&summary.progress, &summary.events_proof_ops)
+            .await;
 
         // Broadcast events with digests for efficient filtering
         if let Err(e) = self.update_tx.send(InternalUpdate::Events(
@@ -427,21 +510,30 @@ impl Simulator {
         }
     }
 
-    pub fn query_state(&self, key: &Digest) -> Option<Lookup> {
-        let state = match self.state.read() {
-            Ok(state) => state,
-            Err(e) => {
-                tracing::error!("Failed to acquire read lock in query_state: {}", e);
-                return None;
-            }
+    pub async fn query_state(&self, key: &Digest) -> Option<Lookup> {
+        self.try_query_state(key).await
+    }
+
+    async fn try_query_state(&self, key: &Digest) -> Option<Lookup> {
+        let state = self.state.read().await;
+
+        let key_history = match state.keys.get(key) {
+            Some(key_history) => key_history,
+            None => return None,
         };
-        let (height, operation) = state.keys.get(key)?.last_key_value()?;
+        let (height, operation) = match key_history.last_key_value() {
+            Some((height, operation)) => (height, operation),
+            None => return None,
+        };
         let (loc, Variable::Update(_, value)) = operation else {
             return None;
         };
 
         // Get progress and certificate
-        let (progress, certificate) = state.progress.get(height)?;
+        let (progress, certificate) = match state.progress.get(height) {
+            Some(value) => value,
+            None => return None,
+        };
 
         // Get required nodes
         let required_digest_positions =
@@ -473,14 +565,12 @@ impl Simulator {
         })
     }
 
-    pub fn query_seed(&self, query: &ChainQuery) -> Option<Seed> {
-        let state = match self.state.read() {
-            Ok(state) => state,
-            Err(e) => {
-                tracing::error!("Failed to acquire read lock in query_seed: {}", e);
-                return None;
-            }
-        };
+    pub async fn query_seed(&self, query: &ChainQuery) -> Option<Seed> {
+        self.try_query_seed(query).await
+    }
+
+    async fn try_query_seed(&self, query: &ChainQuery) -> Option<Seed> {
+        let state = self.state.read().await;
         match query {
             ChainQuery::Latest => state.seeds.last_key_value().map(|(_, seed)| seed.clone()),
             ChainQuery::Index(index) => state.seeds.get(index).cloned(),
@@ -523,7 +613,7 @@ impl Api {
                 .unwrap(),
         );
 
-        Router::new()
+        let router = Router::new()
             .route("/submit", post(submit))
             .route("/seed/:query", get(query_seed))
             .route("/state/:query", get(query_state))
@@ -533,11 +623,16 @@ impl Api {
             .route("/explorer/blocks/:id", get(get_block))
             .route("/explorer/tx/:hash", get(get_transaction))
             .route("/explorer/account/:pubkey", get(get_account_activity))
-            .route("/explorer/search", get(search_explorer))
+            .route("/explorer/search", get(search_explorer));
+
+        #[cfg(feature = "passkeys")]
+        let router = router
             .route("/webauthn/challenge", get(get_passkey_challenge))
             .route("/webauthn/register", post(register_passkey))
             .route("/webauthn/login", post(login_passkey))
-            .route("/webauthn/sign", post(sign_with_passkey))
+            .route("/webauthn/sign", post(sign_with_passkey));
+
+        router
             .layer(cors)
             .layer(GovernorLayer {
                 config: governor_conf,
@@ -547,17 +642,147 @@ impl Api {
 }
 
 async fn submit(AxumState(simulator): AxumState<Arc<Simulator>>, body: Bytes) -> impl IntoResponse {
+    fn log_summary_decode_stages(bytes: &[u8]) {
+        if bytes.is_empty() {
+            tracing::warn!("Empty submission body");
+            return;
+        }
+        if bytes[0] != 2 {
+            return;
+        }
+
+        const MAX_PROOF_NODES: usize = 500;
+        const MAX_PROOF_OPS: usize = 500;
+
+        let mut reader = &bytes[1..];
+        let progress = match Progress::read(&mut reader) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Summary decode failed at progress: {:?}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = Certificate::<MinSig, Digest>::read(&mut reader) {
+            tracing::warn!(
+                view = progress.view,
+                height = progress.height,
+                "Summary decode failed at certificate: {:?}",
+                e
+            );
+            return;
+        }
+
+        if let Err(e) = Proof::<Digest>::read_cfg(&mut reader, &MAX_PROOF_NODES) {
+            tracing::warn!(
+                view = progress.view,
+                height = progress.height,
+                "Summary decode failed at state_proof: {:?}",
+                e
+            );
+            return;
+        }
+
+        let state_ops_len = match usize::read_cfg(
+            &mut reader,
+            &commonware_codec::RangeCfg::from(0..=MAX_PROOF_OPS),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    view = progress.view,
+                    height = progress.height,
+                    "Summary decode failed reading state_proof_ops length: {:?}",
+                    e
+                );
+                return;
+            }
+        };
+
+        let mut state_ops = Vec::with_capacity(state_ops_len);
+        for idx in 0..state_ops_len {
+            let op_context = reader.first().copied();
+            match Variable::<Digest, Value>::read(&mut reader) {
+                Ok(op) => state_ops.push(op),
+                Err(e) => {
+                    let preview_len = core::cmp::min(32, reader.len());
+                    tracing::warn!(
+                        view = progress.view,
+                        height = progress.height,
+                        idx,
+                        op_context = op_context.map(|b| format!("0x{b:02x}")).unwrap_or_else(|| "EOF".to_string()),
+                        remaining = reader.len(),
+                        head = %commonware_utils::hex(&reader[..preview_len]),
+                        "Summary decode failed at state_proof_ops[{idx}]: {:?}",
+                        e
+                    );
+                    return;
+                }
+            }
+        }
+
+        if let Err(e) = Proof::<Digest>::read_cfg(&mut reader, &MAX_PROOF_NODES) {
+            tracing::warn!(
+                view = progress.view,
+                height = progress.height,
+                state_ops = state_ops.len(),
+                "Summary decode failed at events_proof: {:?}",
+                e
+            );
+            return;
+        }
+
+        if let Err(e) = Vec::<Keyless<Output>>::read_range(&mut reader, 0..=MAX_PROOF_OPS) {
+            tracing::warn!(
+                view = progress.view,
+                height = progress.height,
+                state_ops = state_ops.len(),
+                "Summary decode failed at events_proof_ops: {:?}",
+                e
+            );
+            return;
+        }
+
+        if !reader.is_empty() {
+            tracing::warn!(
+                view = progress.view,
+                height = progress.height,
+                state_ops = state_ops.len(),
+                remaining = reader.len(),
+                "Summary decoded fully but had trailing bytes"
+            );
+        } else {
+            tracing::warn!(
+                view = progress.view,
+                height = progress.height,
+                state_ops = state_ops.len(),
+                "Summary decode stages succeeded (unexpected)"
+            );
+        }
+    }
+
     let submission = match Submission::decode(&mut body.as_ref()) {
         Ok(submission) => submission,
-        Err(_) => return StatusCode::BAD_REQUEST,
+        Err(e) => {
+            let preview_len = std::cmp::min(32, body.len());
+            log_summary_decode_stages(body.as_ref());
+            tracing::warn!(
+                len = body.len(),
+                head = %commonware_utils::hex(&body[..preview_len]),
+                "Failed to decode submission: {:?}",
+                e
+            );
+            return StatusCode::BAD_REQUEST;
+        }
     };
 
     match submission {
         Submission::Seed(seed) => {
             if !seed.verify(NAMESPACE, &simulator.identity) {
+                tracing::warn!("Seed verification failed (bad identity or corrupted seed)");
                 return StatusCode::BAD_REQUEST;
             }
-            simulator.submit_seed(seed);
+            simulator.submit_seed(seed).await;
             StatusCode::OK
         }
         Submission::Transactions(txs) => {
@@ -565,11 +790,24 @@ async fn submit(AxumState(simulator): AxumState<Arc<Simulator>>, body: Bytes) ->
             StatusCode::OK
         }
         Submission::Summary(summary) => {
-            let Some((state_digests, events_digests)) = summary.verify(&simulator.identity) else {
-                return StatusCode::BAD_REQUEST;
+            let (state_digests, events_digests) = match summary.verify(&simulator.identity) {
+                Ok(digests) => digests,
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        view = summary.progress.view,
+                        height = summary.progress.height,
+                        state_ops = summary.state_proof_ops.len(),
+                        events_ops = summary.events_proof_ops.len(),
+                        "Summary verification failed"
+                    );
+                    return StatusCode::BAD_REQUEST;
+                }
             };
-            simulator.submit_events(summary.clone(), events_digests);
-            simulator.submit_state(summary, state_digests);
+            simulator
+                .submit_events(summary.clone(), events_digests)
+                .await;
+            simulator.submit_state(summary, state_digests).await;
             StatusCode::OK
         }
     }
@@ -587,7 +825,7 @@ async fn query_state(
         Ok(key) => key,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
-    match simulator.query_state(&key) {
+    match simulator.query_state(&key).await {
         Some(value) => (StatusCode::OK, value.encode().to_vec()).into_response(),
         None => (StatusCode::NOT_FOUND, vec![]).into_response(),
     }
@@ -605,7 +843,7 @@ async fn query_seed(
         Ok(query) => query,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
-    match simulator.query_seed(&query) {
+    match simulator.query_seed(&query).await {
         Some(seed) => (StatusCode::OK, seed.encode().to_vec()).into_response(),
         None => (StatusCode::NOT_FOUND, vec![]).into_response(),
     }
@@ -814,10 +1052,7 @@ async fn list_blocks(
     let offset = pagination.offset.unwrap_or(0);
     let limit = pagination.limit.unwrap_or(20).min(200);
 
-    let state = match simulator.state.read() {
-        Ok(state) => state,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let state = simulator.state.read().await;
 
     let total = state.explorer.indexed_blocks.len();
     let blocks: Vec<_> = state
@@ -843,10 +1078,7 @@ async fn get_block(
     AxumState(simulator): AxumState<Arc<Simulator>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let state = match simulator.state.read() {
-        Ok(state) => state,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let state = simulator.state.read().await;
 
     // Try height first
     let block_opt = if let Ok(height) = id.parse::<u64>() {
@@ -877,10 +1109,7 @@ async fn get_transaction(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let state = match simulator.state.read() {
-        Ok(state) => state,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let state = simulator.state.read().await;
 
     match state.explorer.txs_by_hash.get(&digest) {
         Some(tx) => Json(tx).into_response(),
@@ -901,10 +1130,7 @@ async fn get_account_activity(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
-    let state = match simulator.state.read() {
-        Ok(state) => state,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let state = simulator.state.read().await;
 
     match state.explorer.accounts.get(&public_key) {
         Some(account) => Json(account).into_response(),
@@ -921,10 +1147,7 @@ async fn search_explorer(
     AxumState(simulator): AxumState<Arc<Simulator>>,
     Query(params): Query<SearchQuery>,
 ) -> impl IntoResponse {
-    let state = match simulator.state.read() {
-        Ok(state) => state,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let state = simulator.state.read().await;
 
     let q = params.q.trim();
 
@@ -959,11 +1182,13 @@ async fn search_explorer(
     StatusCode::NOT_FOUND.into_response()
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Serialize)]
 struct ChallengeResponse {
     challenge: String,
 }
 
+#[cfg(feature = "passkeys")]
 async fn get_passkey_challenge(
     AxumState(simulator): AxumState<Arc<Simulator>>,
 ) -> impl IntoResponse {
@@ -974,10 +1199,7 @@ async fn get_passkey_challenge(
         issued_at_ms,
     };
 
-    let mut state = match simulator.state.write() {
-        Ok(state) => state,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let mut state = simulator.state.write().await;
     state
         .passkeys
         .challenges
@@ -986,6 +1208,7 @@ async fn get_passkey_challenge(
     Json(ChallengeResponse { challenge }).into_response()
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Deserialize)]
 struct RegisterRequest {
     credential_id: String,
@@ -993,20 +1216,19 @@ struct RegisterRequest {
     challenge: String,
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Serialize)]
 struct RegisterResponse {
     credential_id: String,
     ed25519_public_key: String,
 }
 
+#[cfg(feature = "passkeys")]
 async fn register_passkey(
     AxumState(simulator): AxumState<Arc<Simulator>>,
     Json(req): Json<RegisterRequest>,
 ) -> impl IntoResponse {
-    let mut state = match simulator.state.write() {
-        Ok(state) => state,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let mut state = simulator.state.write().await;
 
     if state.passkeys.challenges.remove(&req.challenge).is_none() {
         return StatusCode::BAD_REQUEST.into_response();
@@ -1020,7 +1242,7 @@ async fn register_passkey(
         credential_id: req.credential_id.clone(),
         webauthn_public_key: req.webauthn_public_key.clone(),
         ed25519_public_key: hex(public.as_ref()),
-        ed25519_private_bytes: private.as_ref().to_vec(),
+        ed25519_private_key: private,
         created_at_ms: Simulator::now_ms(),
     };
 
@@ -1036,12 +1258,14 @@ async fn register_passkey(
     .into_response()
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Deserialize)]
 struct LoginRequest {
     credential_id: String,
     challenge: String,
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Serialize)]
 struct LoginResponse {
     session_token: String,
@@ -1049,14 +1273,12 @@ struct LoginResponse {
     ed25519_public_key: String,
 }
 
+#[cfg(feature = "passkeys")]
 async fn login_passkey(
     AxumState(simulator): AxumState<Arc<Simulator>>,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    let mut state = match simulator.state.write() {
-        Ok(state) => state,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let mut state = simulator.state.write().await;
 
     if state.passkeys.challenges.remove(&req.challenge).is_none() {
         return StatusCode::BAD_REQUEST.into_response();
@@ -1085,17 +1307,20 @@ async fn login_passkey(
     .into_response()
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Deserialize)]
 struct SignRequest {
     message_hex: String,
 }
 
+#[cfg(feature = "passkeys")]
 #[derive(Serialize)]
 struct SignResponse {
     signature_hex: String,
     public_key: String,
 }
 
+#[cfg(feature = "passkeys")]
 async fn sign_with_passkey(
     AxumState(simulator): AxumState<Arc<Simulator>>,
     headers: HeaderMap,
@@ -1112,41 +1337,30 @@ async fn sign_with_passkey(
         None => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let mut state = match simulator.state.write() {
-        Ok(state) => state,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    let credential = {
+        let mut state = simulator.state.write().await;
+        let session = match state.passkeys.sessions.get(&token) {
+            Some(s) => s.clone(),
+            None => return StatusCode::UNAUTHORIZED.into_response(),
+        };
 
-    let session = match state.passkeys.sessions.get(&token) {
-        Some(s) => s.clone(),
-        None => return StatusCode::UNAUTHORIZED.into_response(),
-    };
+        if session.expires_at_ms < Simulator::now_ms() {
+            state.passkeys.sessions.remove(&token);
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
 
-    if session.expires_at_ms < Simulator::now_ms() {
-        state.passkeys.sessions.remove(&token);
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-
-    let credential = match state.passkeys.credentials.get(&session.credential_id) {
-        Some(c) => c.clone(),
-        None => return StatusCode::UNAUTHORIZED.into_response(),
+        match state.passkeys.credentials.get(&session.credential_id) {
+            Some(c) => c.clone(),
+            None => return StatusCode::UNAUTHORIZED.into_response(),
+        }
     };
 
     let raw = match from_hex(&req.message_hex) {
         Some(raw) => raw,
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
-
-    let mut buf = credential.ed25519_private_bytes.as_slice();
-    let private = match ed25519::PrivateKey::read(&mut buf) {
-        Ok(pk) => pk,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    let signature = private.sign(
-        Some(&nullspace_types::execution::transaction_namespace(
-            NAMESPACE,
-        )),
+    let signature = credential.ed25519_private_key.sign(
+        Some(nullspace_types::execution::TRANSACTION_NAMESPACE),
         &raw,
     );
 
@@ -1244,53 +1458,55 @@ mod tests {
     use commonware_cryptography::{Hasher, Sha256};
     use commonware_runtime::{deterministic::Runner, Runner as _};
     use commonware_storage::store::operation::Variable;
-    use futures::executor::block_on;
     use nullspace_execution::mocks::{
         create_account_keypair, create_adbs, create_network_keypair, create_seed, execute_block,
     };
     use nullspace_types::execution::{Instruction, Key, Transaction, Value};
 
-    #[test]
-    fn test_submit_seed() {
+    #[tokio::test]
+    async fn test_submit_seed() {
         let (network_secret, network_identity) = create_network_keypair();
         let simulator = Simulator::new(network_identity);
         let mut update_stream = simulator.update_subscriber();
 
         // Submit seed
         let seed = create_seed(&network_secret, 1);
-        simulator.submit_seed(seed.clone());
-        let received_update = block_on(async { update_stream.recv().await.unwrap() });
+        simulator.submit_seed(seed.clone()).await;
+        let received_update = update_stream.recv().await.unwrap();
         match received_update {
             InternalUpdate::Seed(received_seed) => assert_eq!(received_seed, seed),
             _ => panic!("Expected seed update"),
         }
         assert_eq!(
-            simulator.query_seed(&ChainQuery::Latest),
+            simulator.query_seed(&ChainQuery::Latest).await,
             Some(seed.clone())
         );
-        assert_eq!(simulator.query_seed(&ChainQuery::Index(1)), Some(seed));
+        assert_eq!(
+            simulator.query_seed(&ChainQuery::Index(1)).await,
+            Some(seed)
+        );
 
         // Submit another seed
         let seed = create_seed(&network_secret, 3);
-        simulator.submit_seed(seed.clone());
-        let received_update = block_on(async { update_stream.recv().await.unwrap() });
+        simulator.submit_seed(seed.clone()).await;
+        let received_update = update_stream.recv().await.unwrap();
         match received_update {
             InternalUpdate::Seed(received_seed) => assert_eq!(received_seed, seed),
             _ => panic!("Expected seed update"),
         }
         assert_eq!(
-            simulator.query_seed(&ChainQuery::Latest),
+            simulator.query_seed(&ChainQuery::Latest).await,
             Some(seed.clone())
         );
-        assert_eq!(simulator.query_seed(&ChainQuery::Index(2)), None);
+        assert_eq!(simulator.query_seed(&ChainQuery::Index(2)).await, None);
         assert_eq!(
-            simulator.query_seed(&ChainQuery::Index(3)),
+            simulator.query_seed(&ChainQuery::Index(3)).await,
             Some(seed.clone())
         );
     }
 
-    #[test]
-    fn test_submit_transaction() {
+    #[tokio::test]
+    async fn test_submit_transaction() {
         let (_, network_identity) = create_network_keypair();
         let simulator = Simulator::new(network_identity);
         let mut mempool_rx = simulator.mempool_subscriber();
@@ -1306,7 +1522,7 @@ mod tests {
 
         simulator.submit_transactions(vec![tx.clone()]);
 
-        let received_txs = block_on(async { mempool_rx.recv().await.unwrap() });
+        let received_txs = mempool_rx.recv().await.unwrap();
         assert_eq!(received_txs.transactions.len(), 1);
         let received_tx = &received_txs.transactions[0];
         assert_eq!(received_tx.public, tx.public);
@@ -1350,13 +1566,15 @@ mod tests {
 
             // Submit events
             let mut update_stream = simulator.update_subscriber();
-            simulator.submit_events(summary.clone(), events_digests);
+            simulator
+                .submit_events(summary.clone(), events_digests)
+                .await;
 
             // Wait for events
             let update_recv = update_stream.recv().await.unwrap();
             match update_recv {
                 InternalUpdate::Events(events_recv, _) => {
-                    assert!(events_recv.verify(&network_identity));
+                    events_recv.verify(&network_identity).unwrap();
                     assert_eq!(events_recv.events_proof, summary.events_proof);
                     assert_eq!(events_recv.events_proof_ops, summary.events_proof_ops);
                 }
@@ -1364,12 +1582,12 @@ mod tests {
             }
 
             // Submit state
-            simulator.submit_state(summary.clone(), state_digests);
+            simulator.submit_state(summary.clone(), state_digests).await;
 
             // Query for state
             let account_key = Sha256::hash(&Key::Account(public.clone()).encode());
-            let lookup = simulator.query_state(&account_key).unwrap();
-            assert!(lookup.verify(&network_identity));
+            let lookup = simulator.query_state(&account_key).await.unwrap();
+            lookup.verify(&network_identity).unwrap();
             let Variable::Update(_, Value::Account(account)) = lookup.operation else {
                 panic!("account not found");
             };
@@ -1378,7 +1596,7 @@ mod tests {
             // Query for non-existent account
             let (_, other_public) = create_account_keypair(2);
             let other_key = Sha256::hash(&Key::Account(other_public).encode());
-            assert!(simulator.query_state(&other_key).is_none());
+            assert!(simulator.query_state(&other_key).await.is_none());
         });
     }
 
@@ -1434,8 +1652,10 @@ mod tests {
 
             // Submit the summary
             let (state_digests, events_digests) = summary.verify(&network_identity).unwrap();
-            simulator.submit_events(summary.clone(), events_digests.clone());
-            simulator.submit_state(summary.clone(), state_digests);
+            simulator
+                .submit_events(summary.clone(), events_digests.clone())
+                .await;
+            simulator.submit_state(summary.clone(), state_digests).await;
 
             // Store original count before moving
             let original_ops_count = summary.events_proof_ops.len();
@@ -1483,10 +1703,9 @@ mod tests {
                     );
 
                     // Verify the proof still validates with multi-proof verification
-                    assert!(
-                        filtered_events.verify(&network_identity),
-                        "Multi-proof verification should pass"
-                    );
+                    filtered_events
+                        .verify(&network_identity)
+                        .expect("Multi-proof verification should pass");
                 }
                 _ => panic!("Expected FilteredEvents"),
             }
@@ -1534,8 +1753,12 @@ mod tests {
             let (state_digests1, events_digests1) = summary1
                 .verify(&network_identity)
                 .expect("Summary 1 verification failed");
-            simulator.submit_events(summary1.clone(), events_digests1);
-            simulator.submit_state(summary1.clone(), state_digests1);
+            simulator
+                .submit_events(summary1.clone(), events_digests1)
+                .await;
+            simulator
+                .submit_state(summary1.clone(), state_digests1)
+                .await;
 
             // Verify height was inferred correctly (should be 1)
             assert_eq!(summary1.progress.height, 1);
@@ -1543,8 +1766,8 @@ mod tests {
             // Query each account to verify they were created
             for (_, public) in accounts.iter() {
                 let account_key = Sha256::hash(&Key::Account(public.clone()).encode());
-                let lookup = simulator.query_state(&account_key).unwrap();
-                assert!(lookup.verify(&network_identity));
+                let lookup = simulator.query_state(&account_key).await.unwrap();
+                lookup.verify(&network_identity).unwrap();
                 let Variable::Update(_, Value::Account(account)) = lookup.operation else {
                     panic!("Account not found for {public:?}");
                 };
@@ -1574,8 +1797,12 @@ mod tests {
             let (state_digests2, events_digests2) = summary2
                 .verify(&network_identity)
                 .expect("Summary 2 verification failed");
-            simulator.submit_events(summary2.clone(), events_digests2);
-            simulator.submit_state(summary2.clone(), state_digests2);
+            simulator
+                .submit_events(summary2.clone(), events_digests2)
+                .await;
+            simulator
+                .submit_state(summary2.clone(), state_digests2)
+                .await;
 
             // Verify height was inferred correctly (should be 2)
             assert_eq!(summary2.progress.height, 2);
@@ -1583,8 +1810,8 @@ mod tests {
             // Query accounts to verify nonce updates
             for (i, (_, public)) in accounts.iter().enumerate() {
                 let account_key = Sha256::hash(&Key::Account(public.clone()).encode());
-                let lookup = simulator.query_state(&account_key).unwrap();
-                assert!(lookup.verify(&network_identity));
+                let lookup = simulator.query_state(&account_key).await.unwrap();
+                lookup.verify(&network_identity).unwrap();
                 let Variable::Update(_, Value::Account(account)) = lookup.operation else {
                     panic!("Account not found for {public:?}");
                 };

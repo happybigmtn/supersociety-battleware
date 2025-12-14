@@ -17,8 +17,8 @@ use nullspace_types::api::Summary;
 use nullspace_types::{
     api::{Lookup, Submission, Update, UpdatesFilter},
     execution::{
-        transaction_namespace, Event, Instruction, Key, Output, Seed,
-        Transaction as ExecutionTransaction, Value, NAMESPACE,
+        Event, Instruction, Key, Output, Seed, Transaction as ExecutionTransaction, Value,
+        NAMESPACE, TRANSACTION_NAMESPACE,
     },
     Identity, Query,
 };
@@ -30,6 +30,101 @@ use rand_chacha::ChaCha20Rng;
 use serde::Serialize;
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstructionKind {
+    // Casino instructions
+    CasinoRegister = 0,
+    CasinoDeposit = 1,
+    CasinoStartGame = 2,
+    CasinoGameMove = 3,
+    CasinoToggleShield = 4,
+    CasinoToggleDouble = 5,
+    CasinoToggleSuper = 6,
+    CasinoJoinTournament = 7,
+    CasinoStartTournament = 8,
+    CasinoEndTournament = 9,
+
+    // Staking instructions
+    Stake = 10,
+    Unstake = 11,
+    ClaimRewards = 12,
+    ProcessEpoch = 13,
+
+    // Vault / AMM instructions
+    CreateVault = 14,
+    DepositCollateral = 15,
+    BorrowUSDT = 16,
+    RepayUSDT = 17,
+    Swap = 18,
+    AddLiquidity = 19,
+    RemoveLiquidity = 20,
+}
+
+impl InstructionKind {
+    fn from_instruction(instruction: &Instruction) -> Self {
+        match instruction {
+            // Casino instructions
+            Instruction::CasinoRegister { .. } => Self::CasinoRegister,
+            Instruction::CasinoDeposit { .. } => Self::CasinoDeposit,
+            Instruction::CasinoStartGame { .. } => Self::CasinoStartGame,
+            Instruction::CasinoGameMove { .. } => Self::CasinoGameMove,
+            Instruction::CasinoToggleShield => Self::CasinoToggleShield,
+            Instruction::CasinoToggleDouble => Self::CasinoToggleDouble,
+            Instruction::CasinoToggleSuper => Self::CasinoToggleSuper,
+            Instruction::CasinoJoinTournament { .. } => Self::CasinoJoinTournament,
+            Instruction::CasinoStartTournament { .. } => Self::CasinoStartTournament,
+            Instruction::CasinoEndTournament { .. } => Self::CasinoEndTournament,
+
+            // Staking instructions
+            Instruction::Stake { .. } => Self::Stake,
+            Instruction::Unstake => Self::Unstake,
+            Instruction::ClaimRewards => Self::ClaimRewards,
+            Instruction::ProcessEpoch => Self::ProcessEpoch,
+
+            // Vault / AMM instructions
+            Instruction::CreateVault => Self::CreateVault,
+            Instruction::DepositCollateral { .. } => Self::DepositCollateral,
+            Instruction::BorrowUSDT { .. } => Self::BorrowUSDT,
+            Instruction::RepayUSDT { .. } => Self::RepayUSDT,
+            Instruction::Swap { .. } => Self::Swap,
+            Instruction::AddLiquidity { .. } => Self::AddLiquidity,
+            Instruction::RemoveLiquidity { .. } => Self::RemoveLiquidity,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            // Casino instructions
+            Self::CasinoRegister => "CasinoRegister",
+            Self::CasinoDeposit => "CasinoDeposit",
+            Self::CasinoStartGame => "CasinoStartGame",
+            Self::CasinoGameMove => "CasinoGameMove",
+            Self::CasinoToggleShield => "CasinoToggleShield",
+            Self::CasinoToggleDouble => "CasinoToggleDouble",
+            Self::CasinoToggleSuper => "CasinoToggleSuper",
+            Self::CasinoJoinTournament => "CasinoJoinTournament",
+            Self::CasinoStartTournament => "CasinoStartTournament",
+            Self::CasinoEndTournament => "CasinoEndTournament",
+
+            // Staking instructions
+            Self::Stake => "Stake",
+            Self::Unstake => "Unstake",
+            Self::ClaimRewards => "ClaimRewards",
+            Self::ProcessEpoch => "ProcessEpoch",
+
+            // Vault / AMM instructions
+            Self::CreateVault => "CreateVault",
+            Self::DepositCollateral => "DepositCollateral",
+            Self::BorrowUSDT => "BorrowUSDT",
+            Self::RepayUSDT => "RepayUSDT",
+            Self::Swap => "Swap",
+            Self::AddLiquidity => "AddLiquidity",
+            Self::RemoveLiquidity => "RemoveLiquidity",
+        }
+    }
+}
 
 /// Helper to convert serde_json::Value to a plain JavaScript object
 fn to_object(value: &serde_json::Value) -> Result<JsValue, JsValue> {
@@ -100,7 +195,7 @@ impl Signer {
     /// Sign a message.
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         self.private_key
-            .sign(Some(&transaction_namespace(NAMESPACE)), message)
+            .sign(Some(TRANSACTION_NAMESPACE), message)
             .encode()
             .to_vec()
     }
@@ -118,6 +213,20 @@ impl Transaction {
     #[wasm_bindgen]
     pub fn encode(&self) -> Vec<u8> {
         self.inner.encode().to_vec()
+    }
+
+    /// Get the instruction kind as a stable enum.
+    #[wasm_bindgen(getter)]
+    pub fn instruction_kind(&self) -> InstructionKind {
+        InstructionKind::from_instruction(&self.inner.instruction)
+    }
+
+    /// Get the canonical instruction name.
+    #[wasm_bindgen(getter)]
+    pub fn instruction_name(&self) -> String {
+        InstructionKind::from_instruction(&self.inner.instruction)
+            .as_str()
+            .to_string()
     }
 
     /// Sign a new casino start game transaction.
@@ -189,6 +298,14 @@ impl Transaction {
         Ok(Transaction { inner: tx })
     }
 
+    /// Sign a new casino toggle super/aura transaction.
+    #[wasm_bindgen]
+    pub fn casino_toggle_super(signer: &Signer, nonce: u64) -> Result<Transaction, JsValue> {
+        let instruction = Instruction::CasinoToggleSuper;
+        let tx = ExecutionTransaction::sign(&signer.private_key, nonce, instruction);
+        Ok(Transaction { inner: tx })
+    }
+
     /// Sign a new casino register transaction.
     #[wasm_bindgen]
     pub fn casino_register(
@@ -235,7 +352,11 @@ impl Transaction {
 
     /// Sign a new casino deposit transaction (dev faucet / testing).
     #[wasm_bindgen]
-    pub fn casino_deposit(signer: &Signer, nonce: u64, amount: u64) -> Result<Transaction, JsValue> {
+    pub fn casino_deposit(
+        signer: &Signer,
+        nonce: u64,
+        amount: u64,
+    ) -> Result<Transaction, JsValue> {
         let instruction = Instruction::CasinoDeposit { amount };
         let tx = ExecutionTransaction::sign(&signer.private_key, nonce, instruction);
         Ok(Transaction { inner: tx })
@@ -527,6 +648,7 @@ fn decode_value(value: Value) -> Result<JsValue, JsValue> {
                 "rank": player.rank,
                 "active_shield": player.active_shield,
                 "active_double": player.active_double,
+                "active_super": player.active_super,
                 "active_session": player.active_session,
                 "last_deposit_block": player.last_deposit_block,
                 "aura_meter": player.aura_meter,
@@ -536,15 +658,35 @@ fn decode_value(value: Value) -> Result<JsValue, JsValue> {
             })
         }
         Value::CasinoSession(session) => {
+            let multipliers: Vec<_> = session
+                .super_mode
+                .multipliers
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id,
+                        "multiplier": m.multiplier,
+                        "super_type": format!("{:?}", m.super_type)
+                    })
+                })
+                .collect();
             serde_json::json!({
                 "type": "CasinoSession",
                 "id": session.id,
                 "player": hex(&session.player.encode()),
-                "game_type": format!("{:?}", session.game_type),
+                "game_type": session.game_type as u8,
                 "bet": session.bet,
                 "state_blob": hex(&session.state_blob),
                 "move_count": session.move_count,
-                "is_complete": session.is_complete
+                "created_at": session.created_at,
+                "is_complete": session.is_complete,
+                "super_mode": {
+                    "is_active": session.super_mode.is_active,
+                    "streak_level": session.super_mode.streak_level,
+                    "multipliers": multipliers
+                },
+                "is_tournament": session.is_tournament,
+                "tournament_id": session.tournament_id
             })
         }
         Value::CasinoLeaderboard(leaderboard) => {
@@ -613,7 +755,9 @@ fn decode_value(value: Value) -> Result<JsValue, JsValue> {
                 "total_voting_power": house.total_voting_power.to_string(),
                 "accumulated_fees": house.accumulated_fees,
                 "total_burned": house.total_burned,
-                "total_issuance": house.total_issuance
+                "total_issuance": house.total_issuance,
+                "three_card_progressive_jackpot": house.three_card_progressive_jackpot,
+                "uth_progressive_jackpot": house.uth_progressive_jackpot
             })
         }
         Value::Staker(staker) => {
@@ -669,8 +813,10 @@ pub fn decode_lookup(lookup_bytes: &[u8], identity_bytes: &[u8]) -> Result<JsVal
         .map_err(|e| JsValue::from_str(&format!("Failed to decode identity: {e:?}")))?;
 
     // Verify the lookup
-    if !lookup.verify(&identity) {
-        return Err(JsValue::from_str("Lookup verification failed"));
+    if let Err(err) = lookup.verify(&identity) {
+        return Err(JsValue::from_str(&format!(
+            "Lookup verification failed: {err}"
+        )));
     }
 
     // Extract the value from the operation
@@ -1077,34 +1223,7 @@ pub fn execute_block(network_secret: u64, view: u64, tx_bytes: &[u8]) -> Result<
 fn process_output(output: &Output) -> Result<serde_json::Value, JsValue> {
     match output {
         Output::Transaction(tx) => {
-            let instruction = match &tx.instruction {
-                // Casino instructions
-                Instruction::CasinoRegister { .. } => "CasinoRegister",
-                Instruction::CasinoDeposit { .. } => "CasinoDeposit",
-                Instruction::CasinoStartGame { .. } => "CasinoStartGame",
-                Instruction::CasinoGameMove { .. } => "CasinoGameMove",
-                Instruction::CasinoToggleShield => "CasinoToggleShield",
-                Instruction::CasinoToggleDouble => "CasinoToggleDouble",
-                Instruction::CasinoJoinTournament { .. } => "CasinoJoinTournament",
-                Instruction::CasinoStartTournament { .. } => "CasinoStartTournament",
-                Instruction::CasinoEndTournament { .. } => "CasinoEndTournament",
-
-                // Staking instructions
-                Instruction::Stake { .. } => "Stake",
-                Instruction::Unstake => "Unstake",
-                Instruction::ClaimRewards => "ClaimRewards",
-                Instruction::ProcessEpoch => "ProcessEpoch",
-
-                // Vault / AMM instructions
-                Instruction::CreateVault => "CreateVault",
-                Instruction::DepositCollateral { .. } => "DepositCollateral",
-                Instruction::BorrowUSDT { .. } => "BorrowUSDT",
-                Instruction::RepayUSDT { .. } => "RepayUSDT",
-                Instruction::Swap { .. } => "Swap",
-                Instruction::AddLiquidity { .. } => "AddLiquidity",
-                Instruction::RemoveLiquidity { .. } => "RemoveLiquidity",
-                _ => "Unknown",
-            };
+            let instruction = instruction_name(&tx.instruction);
             Ok(serde_json::json!({
                 "type": "Transaction",
                 "nonce": tx.nonce,
@@ -1115,6 +1234,10 @@ fn process_output(output: &Output) -> Result<serde_json::Value, JsValue> {
         Output::Event(event) => decode_event(event),
         _ => Ok(serde_json::Value::Null),
     }
+}
+
+fn instruction_name(instruction: &Instruction) -> &'static str {
+    InstructionKind::from_instruction(instruction).as_str()
 }
 
 /// Helper function to process events (both regular and filtered)
@@ -1157,18 +1280,18 @@ pub fn decode_update(update: &[u8], identity: &[u8]) -> Result<JsValue, JsValue>
         Update::Seed(seed) => decode_seed_internal(seed, &identity),
         Update::Events(events) => {
             // Verify the events signature and proof
-            if !events.verify(&identity) {
-                return Err(JsValue::from_str("Invalid events signature or proof"));
-            }
+            events.verify(&identity).map_err(|err| {
+                JsValue::from_str(&format!("Invalid events signature or proof: {err}"))
+            })?;
             process_events(events.events_proof_ops.iter())
         }
         Update::FilteredEvents(events) => {
             // Verify the filtered events signature and proof
-            if !events.verify(&identity) {
-                return Err(JsValue::from_str(
-                    "Invalid filtered events signature or proof",
-                ));
-            }
+            events.verify(&identity).map_err(|err| {
+                JsValue::from_str(&format!(
+                    "Invalid filtered events signature or proof: {err}"
+                ))
+            })?;
             process_events(events.events_proof_ops.iter().map(|(_, op)| op))
         }
     }

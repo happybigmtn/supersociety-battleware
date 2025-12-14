@@ -29,6 +29,7 @@ commonware-utils = { workspace = true }
 bytes =  { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
+anyhow = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "json"] }

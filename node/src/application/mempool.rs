@@ -2,18 +2,20 @@ use commonware_cryptography::{ed25519::PublicKey, sha256::Digest, Digestible};
 use commonware_runtime::Metrics;
 use nullspace_types::execution::Transaction;
 use prometheus_client::metrics::gauge::Gauge;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 /// The maximum number of transactions a single account can have in the mempool.
 // Increased for higher transaction throughput per account
-const MAX_BACKLOG: usize = 64;
+const DEFAULT_MAX_BACKLOG: usize = 64;
 
 /// The maximum number of transactions in the mempool.
 // Scaled for 1000+ concurrent players
-const MAX_TRANSACTIONS: usize = 100_000;
+const DEFAULT_MAX_TRANSACTIONS: usize = 100_000;
 
 /// A mempool for transactions.
 pub struct Mempool {
+    max_backlog: usize,
+    max_transactions: usize,
     transactions: HashMap<Digest, Transaction>,
     tracked: HashMap<PublicKey, BTreeMap<u64, Digest>>,
     /// We store the public keys of the transactions to be processed next (rather than transactions
@@ -21,6 +23,7 @@ pub struct Mempool {
     /// already been processed) and should just try return the transaction with the lowest nonce we
     /// are currently tracking.
     queue: VecDeque<PublicKey>,
+    queued: HashSet<PublicKey>,
 
     unique: Gauge,
     accounts: Gauge,
@@ -29,6 +32,14 @@ pub struct Mempool {
 impl Mempool {
     /// Create a new mempool.
     pub fn new(context: impl Metrics) -> Self {
+        Self::new_with_limits(context, DEFAULT_MAX_BACKLOG, DEFAULT_MAX_TRANSACTIONS)
+    }
+
+    pub fn new_with_limits(
+        context: impl Metrics,
+        max_backlog: usize,
+        max_transactions: usize,
+    ) -> Self {
         // Initialize metrics
         let unique = Gauge::default();
         let accounts = Gauge::default();
@@ -45,9 +56,12 @@ impl Mempool {
 
         // Initialize mempool
         Self {
+            max_backlog,
+            max_transactions,
             transactions: HashMap::new(),
             tracked: HashMap::new(),
             queue: VecDeque::new(),
+            queued: HashSet::new(),
 
             unique,
             accounts,
@@ -57,7 +71,7 @@ impl Mempool {
     /// Add a transaction to the mempool.
     pub fn add(&mut self, tx: Transaction) {
         // If there are too many transactions, ignore
-        if self.transactions.len() >= MAX_TRANSACTIONS {
+        if self.transactions.len() >= self.max_transactions {
             return;
         }
 
@@ -78,19 +92,23 @@ impl Mempool {
         }
 
         // Insert the transaction into the mempool
-        assert!(entry.insert(tx.nonce, digest).is_none());
+        let replaced = entry.insert(tx.nonce, digest);
+        debug_assert!(
+            replaced.is_none(),
+            "duplicate nonce per account should have been filtered"
+        );
         self.transactions.insert(digest, tx);
 
         // If there are too many transactions, remove the furthest in the future
         let entries = entry.len();
-        if entries > MAX_BACKLOG {
+        if entries > self.max_backlog {
             let (_, future) = entry.pop_last().unwrap();
             self.transactions.remove(&future);
         }
 
         // Add to queue if this is the first entry (otherwise the public key will already be
         // in the queue)
-        if entries == 1 {
+        if entries == 1 && self.queued.insert(public.clone()) {
             self.queue.push_back(public);
         }
 
@@ -119,6 +137,7 @@ impl Mempool {
         // If we removed a transaction, remove the address from the tracked map
         if remove {
             self.tracked.remove(public);
+            self.queued.remove(public);
         }
 
         // Update metrics
@@ -128,21 +147,49 @@ impl Mempool {
 
     /// Get the next transaction to process from the mempool.
     pub fn next(&mut self) -> Option<Transaction> {
+        const COMPACT_AFTER_STALE_SKIPS: usize = 1024;
+
+        let mut stale_skips = 0;
         let tx = loop {
             // Get the transaction with the lowest nonce
             let address = self.queue.pop_front()?;
+            if !self.queued.remove(&address) {
+                stale_skips += 1;
+                if stale_skips >= COMPACT_AFTER_STALE_SKIPS {
+                    self.queue.retain(|pk| self.queued.contains(pk));
+                    stale_skips = 0;
+                }
+                continue;
+            }
+
             let Some(tracked) = self.tracked.get_mut(&address) else {
                 // We don't prune the queue when we drop a transaction, so we may need to
                 // read through some untracked addresses.
+                stale_skips += 1;
+                if stale_skips >= COMPACT_AFTER_STALE_SKIPS {
+                    self.queue.retain(|pk| self.queued.contains(pk));
+                    stale_skips = 0;
+                }
                 continue;
             };
             let Some((_, digest)) = tracked.pop_first() else {
+                self.tracked.remove(&address);
+                stale_skips += 1;
+                if stale_skips >= COMPACT_AFTER_STALE_SKIPS {
+                    self.queue.retain(|pk| self.queued.contains(pk));
+                    stale_skips = 0;
+                }
                 continue;
             };
 
             // If the address still has transactions, add it to the end of the queue (to
             // ensure everyone gets a chance to process their transactions)
             if !tracked.is_empty() {
+                let inserted = self.queued.insert(address.clone());
+                debug_assert!(
+                    inserted,
+                    "address should not already be queued after pop_front"
+                );
                 self.queue.push_back(address);
             } else {
                 // If the address has no transactions, remove it from the tracked map
@@ -150,7 +197,10 @@ impl Mempool {
             }
 
             // Remove the transaction from the mempool
-            let tx = self.transactions.remove(&digest).unwrap();
+            let tx = self
+                .transactions
+                .remove(&digest)
+                .expect("tracked digest must exist in transactions map");
             break Some(tx);
         };
 
@@ -258,7 +308,7 @@ mod tests {
 
             let private = PrivateKey::from_seed(1);
 
-            for nonce in 0..=MAX_BACKLOG {
+            for nonce in 0..=DEFAULT_MAX_BACKLOG {
                 let tx = Transaction::sign(
                     &private,
                     nonce as u64,
@@ -267,13 +317,13 @@ mod tests {
                 mempool.add(tx);
             }
 
-            assert_eq!(mempool.transactions.len(), MAX_BACKLOG);
+            assert_eq!(mempool.transactions.len(), DEFAULT_MAX_BACKLOG);
             assert_eq!(mempool.tracked.len(), 1);
 
             let tracked = mempool.tracked.get(&private.public_key()).unwrap();
-            assert_eq!(tracked.len(), MAX_BACKLOG);
+            assert_eq!(tracked.len(), DEFAULT_MAX_BACKLOG);
             assert!(tracked.contains_key(&0));
-            assert!(!tracked.contains_key(&(MAX_BACKLOG as u64))); // remove oldest when full
+            assert!(!tracked.contains_key(&(DEFAULT_MAX_BACKLOG as u64))); // remove oldest when full
         });
     }
 
@@ -483,13 +533,13 @@ mod tests {
         runner.start(|ctx| async move {
             let mut mempool = Mempool::new(ctx);
 
-            for seed in 0..=MAX_TRANSACTIONS {
+            for seed in 0..=DEFAULT_MAX_TRANSACTIONS {
                 let private = PrivateKey::from_seed(seed as u64);
                 let tx = Transaction::sign(&private, 0, Instruction::CasinoDeposit { amount: 100 });
                 mempool.add(tx);
             }
 
-            assert_eq!(mempool.transactions.len(), MAX_TRANSACTIONS);
+            assert_eq!(mempool.transactions.len(), DEFAULT_MAX_TRANSACTIONS);
         });
     }
 

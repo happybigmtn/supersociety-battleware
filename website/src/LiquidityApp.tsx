@@ -96,6 +96,11 @@ export default function LiquidityApp() {
         await client.init();
 
         const keypair = client.getOrCreateKeypair();
+        if (!keypair) {
+          setStatus('Unlock passkey vault (see Vault tab).');
+          pushActivity('Vault locked — unlock to continue');
+          return;
+        }
         publicKeyBytesRef.current = keypair.publicKey;
         publicKeyHexRef.current = keypair.publicKeyHex;
         clientRef.current = client;

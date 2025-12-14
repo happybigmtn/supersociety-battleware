@@ -18,8 +18,120 @@ use std::{fmt::Debug, hash::Hash};
 
 pub const NAMESPACE: &[u8] = b"_SUPERSOCIETY";
 pub const TRANSACTION_SUFFIX: &[u8] = b"_TX";
+pub const TRANSACTION_NAMESPACE: &[u8] = b"_SUPERSOCIETY_TX";
 // Phase 1 scaling: Increased from 100 to 500 for higher throughput
 pub const MAX_BLOCK_TRANSACTIONS: usize = 500;
+
+mod tags {
+    pub mod instruction {
+        // Casino instructions (10-17)
+        pub const CASINO_REGISTER: u8 = 10;
+        pub const CASINO_DEPOSIT: u8 = 11;
+        pub const CASINO_START_GAME: u8 = 12;
+        pub const CASINO_GAME_MOVE: u8 = 13;
+        pub const CASINO_TOGGLE_SHIELD: u8 = 14;
+        pub const CASINO_TOGGLE_DOUBLE: u8 = 15;
+        pub const CASINO_JOIN_TOURNAMENT: u8 = 16;
+        pub const CASINO_START_TOURNAMENT: u8 = 17;
+
+        // Staking (18-21)
+        pub const STAKE: u8 = 18;
+        pub const UNSTAKE: u8 = 19;
+        pub const CLAIM_REWARDS: u8 = 20;
+        pub const PROCESS_EPOCH: u8 = 21;
+
+        // Vaults (22-25)
+        pub const CREATE_VAULT: u8 = 22;
+        pub const DEPOSIT_COLLATERAL: u8 = 23;
+        pub const BORROW_USDT: u8 = 24;
+        pub const REPAY_USDT: u8 = 25;
+
+        // AMM (26-28)
+        pub const SWAP: u8 = 26;
+        pub const ADD_LIQUIDITY: u8 = 27;
+        pub const REMOVE_LIQUIDITY: u8 = 28;
+
+        // Tournaments (29)
+        pub const CASINO_END_TOURNAMENT: u8 = 29;
+
+        // Super/Aura mode (30)
+        pub const CASINO_TOGGLE_SUPER: u8 = 30;
+    }
+
+    pub mod key {
+        pub const ACCOUNT: u8 = 0;
+
+        // Casino keys (10-13)
+        pub const CASINO_PLAYER: u8 = 10;
+        pub const CASINO_SESSION: u8 = 11;
+        pub const CASINO_LEADERBOARD: u8 = 12;
+        pub const TOURNAMENT: u8 = 13;
+
+        // Staking & house (14-15)
+        pub const HOUSE: u8 = 14;
+        pub const STAKER: u8 = 15;
+
+        // Virtual liquidity (16-17)
+        pub const VAULT: u8 = 16;
+        pub const AMM_POOL: u8 = 17;
+
+        // LP balance (18)
+        pub const LP_BALANCE: u8 = 18;
+    }
+
+    pub mod value {
+        pub const ACCOUNT: u8 = 0;
+        pub const COMMIT: u8 = 3;
+
+        // Casino values (10-13)
+        pub const CASINO_PLAYER: u8 = 10;
+        pub const CASINO_SESSION: u8 = 11;
+        pub const CASINO_LEADERBOARD: u8 = 12;
+        pub const TOURNAMENT: u8 = 13;
+
+        // Staking & house (14-15)
+        pub const HOUSE: u8 = 14;
+        pub const STAKER: u8 = 15;
+
+        // Virtual liquidity (16-17)
+        pub const VAULT: u8 = 16;
+        pub const AMM_POOL: u8 = 17;
+
+        // LP balance (18)
+        pub const LP_BALANCE: u8 = 18;
+    }
+
+    pub mod event {
+        // Casino events (20-24), plus error (29)
+        pub const CASINO_PLAYER_REGISTERED: u8 = 20;
+        pub const CASINO_GAME_STARTED: u8 = 21;
+        pub const CASINO_GAME_MOVED: u8 = 22;
+        pub const CASINO_GAME_COMPLETED: u8 = 23;
+        pub const CASINO_LEADERBOARD_UPDATED: u8 = 24;
+        pub const CASINO_ERROR: u8 = 29;
+
+        // Tournament events (25-28)
+        pub const TOURNAMENT_STARTED: u8 = 25;
+        pub const PLAYER_JOINED: u8 = 26;
+        pub const TOURNAMENT_PHASE_CHANGED: u8 = 27;
+        pub const TOURNAMENT_ENDED: u8 = 28;
+
+        // Vault & AMM events (30-36)
+        pub const VAULT_CREATED: u8 = 30;
+        pub const COLLATERAL_DEPOSITED: u8 = 31;
+        pub const VUSDT_BORROWED: u8 = 32;
+        pub const VUSDT_REPAID: u8 = 33;
+        pub const AMM_SWAPPED: u8 = 34;
+        pub const LIQUIDITY_ADDED: u8 = 35;
+        pub const LIQUIDITY_REMOVED: u8 = 36;
+
+        // Staking events (37-40)
+        pub const STAKED: u8 = 37;
+        pub const UNSTAKED: u8 = 38;
+        pub const EPOCH_PROCESSED: u8 = 39;
+        pub const REWARDS_CLAIMED: u8 = 40;
+    }
+}
 
 pub type Seed = CSeed<MinSig>;
 pub type Notarization = CNotarization<MinSig, Digest>;
@@ -46,7 +158,7 @@ pub struct Transaction {
 
 impl Transaction {
     fn payload(nonce: &u64, instruction: &Instruction) -> Vec<u8> {
-        let mut payload = Vec::new();
+        let mut payload = Vec::with_capacity(nonce.encode_size() + instruction.encode_size());
         nonce.write(&mut payload);
         instruction.write(&mut payload);
 
@@ -55,7 +167,7 @@ impl Transaction {
 
     pub fn sign(private: &ed25519::PrivateKey, nonce: u64, instruction: Instruction) -> Self {
         let signature = private.sign(
-            Some(&transaction_namespace(NAMESPACE)),
+            Some(TRANSACTION_NAMESPACE),
             &Self::payload(&nonce, &instruction),
         );
 
@@ -69,7 +181,7 @@ impl Transaction {
 
     pub fn verify(&self) -> bool {
         self.public.verify(
-            Some(&transaction_namespace(NAMESPACE)),
+            Some(TRANSACTION_NAMESPACE),
             &Self::payload(&self.nonce, &self.instruction),
             &self.signature,
         )
@@ -77,7 +189,7 @@ impl Transaction {
 
     pub fn verify_batch(&self, batch: &mut Batch) {
         batch.add(
-            Some(&transaction_namespace(NAMESPACE)),
+            Some(TRANSACTION_NAMESPACE),
             &Self::payload(&self.nonce, &self.instruction),
             &self.public,
             &self.signature,
@@ -167,6 +279,10 @@ pub enum Instruction {
     /// Binary: [15]
     CasinoToggleDouble,
 
+    /// Toggle super/aura mode for casino games.
+    /// Binary: [30]
+    CasinoToggleSuper,
+
     /// Join a tournament.
     /// Binary: [16] [tournamentId:u64 BE]
     CasinoJoinTournament { tournament_id: u64 },
@@ -241,12 +357,12 @@ impl Write for Instruction {
         match self {
             // Casino instructions (tags 10-17)
             Self::CasinoRegister { name } => {
-                10u8.write(writer);
+                tags::instruction::CASINO_REGISTER.write(writer);
                 (name.len() as u32).write(writer);
                 writer.put_slice(name.as_bytes());
             }
             Self::CasinoDeposit { amount } => {
-                11u8.write(writer);
+                tags::instruction::CASINO_DEPOSIT.write(writer);
                 amount.write(writer);
             }
             Self::CasinoStartGame {
@@ -254,7 +370,7 @@ impl Write for Instruction {
                 bet,
                 session_id,
             } => {
-                12u8.write(writer);
+                tags::instruction::CASINO_START_GAME.write(writer);
                 game_type.write(writer);
                 bet.write(writer);
                 session_id.write(writer);
@@ -263,15 +379,16 @@ impl Write for Instruction {
                 session_id,
                 payload,
             } => {
-                13u8.write(writer);
+                tags::instruction::CASINO_GAME_MOVE.write(writer);
                 session_id.write(writer);
                 (payload.len() as u32).write(writer);
                 writer.put_slice(payload);
             }
-            Self::CasinoToggleShield => 14u8.write(writer),
-            Self::CasinoToggleDouble => 15u8.write(writer),
+            Self::CasinoToggleShield => tags::instruction::CASINO_TOGGLE_SHIELD.write(writer),
+            Self::CasinoToggleDouble => tags::instruction::CASINO_TOGGLE_DOUBLE.write(writer),
+            Self::CasinoToggleSuper => tags::instruction::CASINO_TOGGLE_SUPER.write(writer),
             Self::CasinoJoinTournament { tournament_id } => {
-                16u8.write(writer);
+                tags::instruction::CASINO_JOIN_TOURNAMENT.write(writer);
                 tournament_id.write(writer);
             }
             Self::CasinoStartTournament {
@@ -279,7 +396,7 @@ impl Write for Instruction {
                 start_time_ms,
                 end_time_ms,
             } => {
-                17u8.write(writer);
+                tags::instruction::CASINO_START_TOURNAMENT.write(writer);
                 tournament_id.write(writer);
                 start_time_ms.write(writer);
                 end_time_ms.write(writer);
@@ -287,26 +404,26 @@ impl Write for Instruction {
 
             // Staking (18-21)
             Self::Stake { amount, duration } => {
-                18u8.write(writer);
+                tags::instruction::STAKE.write(writer);
                 amount.write(writer);
                 duration.write(writer);
             }
-            Self::Unstake => 19u8.write(writer),
-            Self::ClaimRewards => 20u8.write(writer),
-            Self::ProcessEpoch => 21u8.write(writer),
+            Self::Unstake => tags::instruction::UNSTAKE.write(writer),
+            Self::ClaimRewards => tags::instruction::CLAIM_REWARDS.write(writer),
+            Self::ProcessEpoch => tags::instruction::PROCESS_EPOCH.write(writer),
 
             // Vaults (22-25)
-            Self::CreateVault => 22u8.write(writer),
+            Self::CreateVault => tags::instruction::CREATE_VAULT.write(writer),
             Self::DepositCollateral { amount } => {
-                23u8.write(writer);
+                tags::instruction::DEPOSIT_COLLATERAL.write(writer);
                 amount.write(writer);
             }
             Self::BorrowUSDT { amount } => {
-                24u8.write(writer);
+                tags::instruction::BORROW_USDT.write(writer);
                 amount.write(writer);
             }
             Self::RepayUSDT { amount } => {
-                25u8.write(writer);
+                tags::instruction::REPAY_USDT.write(writer);
                 amount.write(writer);
             }
 
@@ -316,7 +433,7 @@ impl Write for Instruction {
                 min_amount_out,
                 is_buying_rng,
             } => {
-                26u8.write(writer);
+                tags::instruction::SWAP.write(writer);
                 amount_in.write(writer);
                 min_amount_out.write(writer);
                 is_buying_rng.write(writer);
@@ -325,16 +442,16 @@ impl Write for Instruction {
                 rng_amount,
                 usdt_amount,
             } => {
-                27u8.write(writer);
+                tags::instruction::ADD_LIQUIDITY.write(writer);
                 rng_amount.write(writer);
                 usdt_amount.write(writer);
             }
             Self::RemoveLiquidity { shares } => {
-                28u8.write(writer);
+                tags::instruction::REMOVE_LIQUIDITY.write(writer);
                 shares.write(writer);
             }
             Self::CasinoEndTournament { tournament_id } => {
-                29u8.write(writer);
+                tags::instruction::CASINO_END_TOURNAMENT.write(writer);
                 tournament_id.write(writer);
             }
         }
@@ -342,18 +459,19 @@ impl Write for Instruction {
 }
 
 /// Maximum name length for casino player registration
-pub const CASINO_MAX_NAME_LENGTH: usize = 32;
+pub const CASINO_MAX_NAME_LENGTH: usize = crate::casino::MAX_NAME_LENGTH;
 
 /// Maximum payload length for casino game moves
-pub const CASINO_MAX_PAYLOAD_LENGTH: usize = 256;
+pub const CASINO_MAX_PAYLOAD_LENGTH: usize = crate::casino::MAX_PAYLOAD_LENGTH;
 
 impl Read for Instruction {
     type Cfg = ();
 
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let instruction = match reader.get_u8() {
+        let kind = u8::read(reader)?;
+        let instruction = match kind {
             // Casino instructions (tags 10-17)
-            10 => {
+            tags::instruction::CASINO_REGISTER => {
                 let name_len = u32::read(reader)? as usize;
                 if name_len > CASINO_MAX_NAME_LENGTH {
                     return Err(Error::Invalid("Instruction", "casino name too long"));
@@ -367,15 +485,15 @@ impl Read for Instruction {
                     .map_err(|_| Error::Invalid("Instruction", "invalid UTF-8 in casino name"))?;
                 Self::CasinoRegister { name }
             }
-            11 => Self::CasinoDeposit {
+            tags::instruction::CASINO_DEPOSIT => Self::CasinoDeposit {
                 amount: u64::read(reader)?,
             },
-            12 => Self::CasinoStartGame {
+            tags::instruction::CASINO_START_GAME => Self::CasinoStartGame {
                 game_type: crate::casino::GameType::read(reader)?,
                 bet: u64::read(reader)?,
                 session_id: u64::read(reader)?,
             },
-            13 => {
+            tags::instruction::CASINO_GAME_MOVE => {
                 let session_id = u64::read(reader)?;
                 let payload_len = u32::read(reader)? as usize;
                 if payload_len > CASINO_MAX_PAYLOAD_LENGTH {
@@ -391,52 +509,53 @@ impl Read for Instruction {
                     payload,
                 }
             }
-            14 => Self::CasinoToggleShield,
-            15 => Self::CasinoToggleDouble,
-            16 => Self::CasinoJoinTournament {
+            tags::instruction::CASINO_TOGGLE_SHIELD => Self::CasinoToggleShield,
+            tags::instruction::CASINO_TOGGLE_DOUBLE => Self::CasinoToggleDouble,
+            tags::instruction::CASINO_TOGGLE_SUPER => Self::CasinoToggleSuper,
+            tags::instruction::CASINO_JOIN_TOURNAMENT => Self::CasinoJoinTournament {
                 tournament_id: u64::read(reader)?,
             },
-            17 => Self::CasinoStartTournament {
+            tags::instruction::CASINO_START_TOURNAMENT => Self::CasinoStartTournament {
                 tournament_id: u64::read(reader)?,
                 start_time_ms: u64::read(reader)?,
                 end_time_ms: u64::read(reader)?,
             },
 
             // Staking (18-21)
-            18 => Self::Stake {
+            tags::instruction::STAKE => Self::Stake {
                 amount: u64::read(reader)?,
                 duration: u64::read(reader)?,
             },
-            19 => Self::Unstake,
-            20 => Self::ClaimRewards,
-            21 => Self::ProcessEpoch,
+            tags::instruction::UNSTAKE => Self::Unstake,
+            tags::instruction::CLAIM_REWARDS => Self::ClaimRewards,
+            tags::instruction::PROCESS_EPOCH => Self::ProcessEpoch,
 
             // Vaults (22-25)
-            22 => Self::CreateVault,
-            23 => Self::DepositCollateral {
+            tags::instruction::CREATE_VAULT => Self::CreateVault,
+            tags::instruction::DEPOSIT_COLLATERAL => Self::DepositCollateral {
                 amount: u64::read(reader)?,
             },
-            24 => Self::BorrowUSDT {
+            tags::instruction::BORROW_USDT => Self::BorrowUSDT {
                 amount: u64::read(reader)?,
             },
-            25 => Self::RepayUSDT {
+            tags::instruction::REPAY_USDT => Self::RepayUSDT {
                 amount: u64::read(reader)?,
             },
 
             // AMM (26-28)
-            26 => Self::Swap {
+            tags::instruction::SWAP => Self::Swap {
                 amount_in: u64::read(reader)?,
                 min_amount_out: u64::read(reader)?,
                 is_buying_rng: bool::read(reader)?,
             },
-            27 => Self::AddLiquidity {
+            tags::instruction::ADD_LIQUIDITY => Self::AddLiquidity {
                 rng_amount: u64::read(reader)?,
                 usdt_amount: u64::read(reader)?,
             },
-            28 => Self::RemoveLiquidity {
+            tags::instruction::REMOVE_LIQUIDITY => Self::RemoveLiquidity {
                 shares: u64::read(reader)?,
             },
-            29 => Self::CasinoEndTournament {
+            tags::instruction::CASINO_END_TOURNAMENT => Self::CasinoEndTournament {
                 tournament_id: u64::read(reader)?,
             },
 
@@ -456,7 +575,7 @@ impl EncodeSize for Instruction {
                 Self::CasinoDeposit { .. } => 8,
                 Self::CasinoStartGame { .. } => 1 + 8 + 8,
                 Self::CasinoGameMove { payload, .. } => 8 + 4 + payload.len(),
-                Self::CasinoToggleShield | Self::CasinoToggleDouble => 0,
+                Self::CasinoToggleShield | Self::CasinoToggleDouble | Self::CasinoToggleSuper => 0,
                 Self::CasinoJoinTournament { .. } => 8,
                 Self::CasinoStartTournament { .. } => 8 + 8 + 8,
 
@@ -769,40 +888,40 @@ impl Write for Key {
         match self {
             // Account key (tag 0)
             Self::Account(pk) => {
-                0u8.write(writer);
+                tags::key::ACCOUNT.write(writer);
                 pk.write(writer);
             }
 
             // Casino keys (tags 10-13)
             Self::CasinoPlayer(pk) => {
-                10u8.write(writer);
+                tags::key::CASINO_PLAYER.write(writer);
                 pk.write(writer);
             }
             Self::CasinoSession(id) => {
-                11u8.write(writer);
+                tags::key::CASINO_SESSION.write(writer);
                 id.write(writer);
             }
-            Self::CasinoLeaderboard => 12u8.write(writer),
+            Self::CasinoLeaderboard => tags::key::CASINO_LEADERBOARD.write(writer),
             Self::Tournament(id) => {
-                13u8.write(writer);
+                tags::key::TOURNAMENT.write(writer);
                 id.write(writer);
             }
 
             // Staking & House
-            Self::House => 14u8.write(writer),
+            Self::House => tags::key::HOUSE.write(writer),
             Self::Staker(pk) => {
-                15u8.write(writer);
+                tags::key::STAKER.write(writer);
                 pk.write(writer);
             }
 
             // Virtual Liquidity
             Self::Vault(pk) => {
-                16u8.write(writer);
+                tags::key::VAULT.write(writer);
                 pk.write(writer);
             }
-            Self::AmmPool => 17u8.write(writer),
+            Self::AmmPool => tags::key::AMM_POOL.write(writer),
             Self::LpBalance(pk) => {
-                18u8.write(writer);
+                tags::key::LP_BALANCE.write(writer);
                 pk.write(writer);
             }
         }
@@ -813,24 +932,25 @@ impl Read for Key {
     type Cfg = ();
 
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let key = match reader.get_u8() {
+        let kind = u8::read(reader)?;
+        let key = match kind {
             // Account key (tag 0)
-            0 => Self::Account(PublicKey::read(reader)?),
+            tags::key::ACCOUNT => Self::Account(PublicKey::read(reader)?),
 
             // Casino keys (tags 10-13)
-            10 => Self::CasinoPlayer(PublicKey::read(reader)?),
-            11 => Self::CasinoSession(u64::read(reader)?),
-            12 => Self::CasinoLeaderboard,
-            13 => Self::Tournament(u64::read(reader)?),
+            tags::key::CASINO_PLAYER => Self::CasinoPlayer(PublicKey::read(reader)?),
+            tags::key::CASINO_SESSION => Self::CasinoSession(u64::read(reader)?),
+            tags::key::CASINO_LEADERBOARD => Self::CasinoLeaderboard,
+            tags::key::TOURNAMENT => Self::Tournament(u64::read(reader)?),
 
             // Staking & House
-            14 => Self::House,
-            15 => Self::Staker(PublicKey::read(reader)?),
+            tags::key::HOUSE => Self::House,
+            tags::key::STAKER => Self::Staker(PublicKey::read(reader)?),
 
             // Virtual Liquidity
-            16 => Self::Vault(PublicKey::read(reader)?),
-            17 => Self::AmmPool,
-            18 => Self::LpBalance(PublicKey::read(reader)?),
+            tags::key::VAULT => Self::Vault(PublicKey::read(reader)?),
+            tags::key::AMM_POOL => Self::AmmPool,
+            tags::key::LP_BALANCE => Self::LpBalance(PublicKey::read(reader)?),
 
             i => return Err(Error::InvalidEnum(i)),
         };
@@ -899,56 +1019,56 @@ impl Write for Value {
         match self {
             // Account value (tag 0)
             Self::Account(account) => {
-                0u8.write(writer);
+                tags::value::ACCOUNT.write(writer);
                 account.write(writer);
             }
 
             // System values
             Self::Commit { height, start } => {
-                3u8.write(writer);
+                tags::value::COMMIT.write(writer);
                 height.write(writer);
                 start.write(writer);
             }
 
             // Casino values (tags 10-13)
             Self::CasinoPlayer(player) => {
-                10u8.write(writer);
+                tags::value::CASINO_PLAYER.write(writer);
                 player.write(writer);
             }
             Self::CasinoSession(session) => {
-                11u8.write(writer);
+                tags::value::CASINO_SESSION.write(writer);
                 session.write(writer);
             }
             Self::CasinoLeaderboard(leaderboard) => {
-                12u8.write(writer);
+                tags::value::CASINO_LEADERBOARD.write(writer);
                 leaderboard.write(writer);
             }
             Self::Tournament(tournament) => {
-                13u8.write(writer);
+                tags::value::TOURNAMENT.write(writer);
                 tournament.write(writer);
             }
 
             // Staking & House
             Self::House(house) => {
-                14u8.write(writer);
+                tags::value::HOUSE.write(writer);
                 house.write(writer);
             }
             Self::Staker(staker) => {
-                15u8.write(writer);
+                tags::value::STAKER.write(writer);
                 staker.write(writer);
             }
 
             // Virtual Liquidity
             Self::Vault(vault) => {
-                16u8.write(writer);
+                tags::value::VAULT.write(writer);
                 vault.write(writer);
             }
             Self::AmmPool(pool) => {
-                17u8.write(writer);
+                tags::value::AMM_POOL.write(writer);
                 pool.write(writer);
             }
             Self::LpBalance(bal) => {
-                18u8.write(writer);
+                tags::value::LP_BALANCE.write(writer);
                 bal.write(writer);
             }
         }
@@ -959,30 +1079,35 @@ impl Read for Value {
     type Cfg = ();
 
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let value = match reader.get_u8() {
+        let kind = u8::read(reader)?;
+        let value = match kind {
             // Account value (tag 0)
-            0 => Self::Account(Account::read(reader)?),
+            tags::value::ACCOUNT => Self::Account(Account::read(reader)?),
 
             // System values
-            3 => Self::Commit {
+            tags::value::COMMIT => Self::Commit {
                 height: u64::read(reader)?,
                 start: u64::read(reader)?,
             },
 
             // Casino values (tags 10-13)
-            10 => Self::CasinoPlayer(crate::casino::Player::read(reader)?),
-            11 => Self::CasinoSession(crate::casino::GameSession::read(reader)?),
-            12 => Self::CasinoLeaderboard(crate::casino::CasinoLeaderboard::read(reader)?),
-            13 => Self::Tournament(crate::casino::Tournament::read(reader)?),
+            tags::value::CASINO_PLAYER => Self::CasinoPlayer(crate::casino::Player::read(reader)?),
+            tags::value::CASINO_SESSION => {
+                Self::CasinoSession(crate::casino::GameSession::read(reader)?)
+            }
+            tags::value::CASINO_LEADERBOARD => {
+                Self::CasinoLeaderboard(crate::casino::CasinoLeaderboard::read(reader)?)
+            }
+            tags::value::TOURNAMENT => Self::Tournament(crate::casino::Tournament::read(reader)?),
 
             // Staking & House
-            14 => Self::House(crate::casino::HouseState::read(reader)?),
-            15 => Self::Staker(crate::casino::Staker::read(reader)?),
+            tags::value::HOUSE => Self::House(crate::casino::HouseState::read(reader)?),
+            tags::value::STAKER => Self::Staker(crate::casino::Staker::read(reader)?),
 
             // Virtual Liquidity
-            16 => Self::Vault(crate::casino::Vault::read(reader)?),
-            17 => Self::AmmPool(crate::casino::AmmPool::read(reader)?),
-            18 => Self::LpBalance(u64::read(reader)?),
+            tags::value::VAULT => Self::Vault(crate::casino::Vault::read(reader)?),
+            tags::value::AMM_POOL => Self::AmmPool(crate::casino::AmmPool::read(reader)?),
+            tags::value::LP_BALANCE => Self::LpBalance(u64::read(reader)?),
 
             i => return Err(Error::InvalidEnum(i)),
         };
@@ -1155,7 +1280,7 @@ impl Write for Event {
         match self {
             // Casino events (tags 20-24)
             Self::CasinoPlayerRegistered { player, name } => {
-                20u8.write(writer);
+                tags::event::CASINO_PLAYER_REGISTERED.write(writer);
                 player.write(writer);
                 (name.len() as u32).write(writer);
                 writer.put_slice(name.as_bytes());
@@ -1167,7 +1292,7 @@ impl Write for Event {
                 bet,
                 initial_state,
             } => {
-                21u8.write(writer);
+                tags::event::CASINO_GAME_STARTED.write(writer);
                 session_id.write(writer);
                 player.write(writer);
                 game_type.write(writer);
@@ -1179,7 +1304,7 @@ impl Write for Event {
                 move_number,
                 new_state,
             } => {
-                22u8.write(writer);
+                tags::event::CASINO_GAME_MOVED.write(writer);
                 session_id.write(writer);
                 move_number.write(writer);
                 new_state.write(writer);
@@ -1193,7 +1318,7 @@ impl Write for Event {
                 was_shielded,
                 was_doubled,
             } => {
-                23u8.write(writer);
+                tags::event::CASINO_GAME_COMPLETED.write(writer);
                 session_id.write(writer);
                 player.write(writer);
                 game_type.write(writer);
@@ -1203,7 +1328,7 @@ impl Write for Event {
                 was_doubled.write(writer);
             }
             Self::CasinoLeaderboardUpdated { leaderboard } => {
-                24u8.write(writer);
+                tags::event::CASINO_LEADERBOARD_UPDATED.write(writer);
                 leaderboard.write(writer);
             }
             Self::CasinoError {
@@ -1212,7 +1337,7 @@ impl Write for Event {
                 error_code,
                 message,
             } => {
-                29u8.write(writer);
+                tags::event::CASINO_ERROR.write(writer);
                 player.write(writer);
                 session_id.write(writer);
                 error_code.write(writer);
@@ -1222,7 +1347,7 @@ impl Write for Event {
 
             // Tournament events (tags 25-28)
             Self::TournamentStarted { id, start_block } => {
-                25u8.write(writer);
+                tags::event::TOURNAMENT_STARTED.write(writer);
                 id.write(writer);
                 start_block.write(writer);
             }
@@ -1230,24 +1355,24 @@ impl Write for Event {
                 tournament_id,
                 player,
             } => {
-                26u8.write(writer);
+                tags::event::PLAYER_JOINED.write(writer);
                 tournament_id.write(writer);
                 player.write(writer);
             }
             Self::TournamentPhaseChanged { id, phase } => {
-                27u8.write(writer);
+                tags::event::TOURNAMENT_PHASE_CHANGED.write(writer);
                 id.write(writer);
                 phase.write(writer);
             }
             Self::TournamentEnded { id, rankings } => {
-                28u8.write(writer);
+                tags::event::TOURNAMENT_ENDED.write(writer);
                 id.write(writer);
                 rankings.write(writer);
             }
 
             // Vault & AMM events (tags 30-36)
             Self::VaultCreated { player } => {
-                30u8.write(writer);
+                tags::event::VAULT_CREATED.write(writer);
                 player.write(writer);
             }
             Self::CollateralDeposited {
@@ -1255,7 +1380,7 @@ impl Write for Event {
                 amount,
                 new_collateral,
             } => {
-                31u8.write(writer);
+                tags::event::COLLATERAL_DEPOSITED.write(writer);
                 player.write(writer);
                 amount.write(writer);
                 new_collateral.write(writer);
@@ -1265,7 +1390,7 @@ impl Write for Event {
                 amount,
                 new_debt,
             } => {
-                32u8.write(writer);
+                tags::event::VUSDT_BORROWED.write(writer);
                 player.write(writer);
                 amount.write(writer);
                 new_debt.write(writer);
@@ -1275,7 +1400,7 @@ impl Write for Event {
                 amount,
                 new_debt,
             } => {
-                33u8.write(writer);
+                tags::event::VUSDT_REPAID.write(writer);
                 player.write(writer);
                 amount.write(writer);
                 new_debt.write(writer);
@@ -1290,7 +1415,7 @@ impl Write for Event {
                 reserve_rng,
                 reserve_vusdt,
             } => {
-                34u8.write(writer);
+                tags::event::AMM_SWAPPED.write(writer);
                 player.write(writer);
                 is_buying_rng.write(writer);
                 amount_in.write(writer);
@@ -1310,7 +1435,7 @@ impl Write for Event {
                 reserve_vusdt,
                 lp_balance,
             } => {
-                35u8.write(writer);
+                tags::event::LIQUIDITY_ADDED.write(writer);
                 player.write(writer);
                 rng_amount.write(writer);
                 vusdt_amount.write(writer);
@@ -1330,7 +1455,7 @@ impl Write for Event {
                 reserve_vusdt,
                 lp_balance,
             } => {
-                36u8.write(writer);
+                tags::event::LIQUIDITY_REMOVED.write(writer);
                 player.write(writer);
                 rng_amount.write(writer);
                 vusdt_amount.write(writer);
@@ -1350,7 +1475,7 @@ impl Write for Event {
                 unlock_ts,
                 voting_power,
             } => {
-                37u8.write(writer);
+                tags::event::STAKED.write(writer);
                 player.write(writer);
                 amount.write(writer);
                 duration.write(writer);
@@ -1359,16 +1484,16 @@ impl Write for Event {
                 voting_power.write(writer);
             }
             Self::Unstaked { player, amount } => {
-                38u8.write(writer);
+                tags::event::UNSTAKED.write(writer);
                 player.write(writer);
                 amount.write(writer);
             }
             Self::EpochProcessed { epoch } => {
-                39u8.write(writer);
+                tags::event::EPOCH_PROCESSED.write(writer);
                 epoch.write(writer);
             }
             Self::RewardsClaimed { player, amount } => {
-                40u8.write(writer);
+                tags::event::REWARDS_CLAIMED.write(writer);
                 player.write(writer);
                 amount.write(writer);
             }
@@ -1380,9 +1505,10 @@ impl Read for Event {
     type Cfg = ();
 
     fn read_cfg(reader: &mut impl Buf, _: &Self::Cfg) -> Result<Self, Error> {
-        let event = match reader.get_u8() {
+        let kind = u8::read(reader)?;
+        let event = match kind {
             // Casino events (tags 20-24)
-            20 => {
+            tags::event::CASINO_PLAYER_REGISTERED => {
                 let player = PublicKey::read(reader)?;
                 let name_len = u32::read(reader)? as usize;
                 if name_len > CASINO_MAX_NAME_LENGTH {
@@ -1397,19 +1523,19 @@ impl Read for Event {
                     .map_err(|_| Error::Invalid("Event", "invalid UTF-8 in casino name"))?;
                 Self::CasinoPlayerRegistered { player, name }
             }
-            21 => Self::CasinoGameStarted {
+            tags::event::CASINO_GAME_STARTED => Self::CasinoGameStarted {
                 session_id: u64::read(reader)?,
                 player: PublicKey::read(reader)?,
                 game_type: crate::casino::GameType::read(reader)?,
                 bet: u64::read(reader)?,
                 initial_state: Vec::<u8>::read_range(reader, 0..=1024)?,
             },
-            22 => Self::CasinoGameMoved {
+            tags::event::CASINO_GAME_MOVED => Self::CasinoGameMoved {
                 session_id: u64::read(reader)?,
                 move_number: u32::read(reader)?,
                 new_state: Vec::<u8>::read_range(reader, 0..=1024)?,
             },
-            23 => Self::CasinoGameCompleted {
+            tags::event::CASINO_GAME_COMPLETED => Self::CasinoGameCompleted {
                 session_id: u64::read(reader)?,
                 player: PublicKey::read(reader)?,
                 game_type: crate::casino::GameType::read(reader)?,
@@ -1418,10 +1544,10 @@ impl Read for Event {
                 was_shielded: bool::read(reader)?,
                 was_doubled: bool::read(reader)?,
             },
-            24 => Self::CasinoLeaderboardUpdated {
+            tags::event::CASINO_LEADERBOARD_UPDATED => Self::CasinoLeaderboardUpdated {
                 leaderboard: crate::casino::CasinoLeaderboard::read(reader)?,
             },
-            29 => {
+            tags::event::CASINO_ERROR => {
                 let player = PublicKey::read(reader)?;
                 let session_id = Option::<u64>::read(reader)?;
                 let error_code = u8::read(reader)?;
@@ -1446,43 +1572,43 @@ impl Read for Event {
             }
 
             // Tournament events (tags 25-28)
-            25 => Self::TournamentStarted {
+            tags::event::TOURNAMENT_STARTED => Self::TournamentStarted {
                 id: u64::read(reader)?,
                 start_block: u64::read(reader)?,
             },
-            26 => Self::PlayerJoined {
+            tags::event::PLAYER_JOINED => Self::PlayerJoined {
                 tournament_id: u64::read(reader)?,
                 player: PublicKey::read(reader)?,
             },
-            27 => Self::TournamentPhaseChanged {
+            tags::event::TOURNAMENT_PHASE_CHANGED => Self::TournamentPhaseChanged {
                 id: u64::read(reader)?,
                 phase: crate::casino::TournamentPhase::read(reader)?,
             },
-            28 => Self::TournamentEnded {
+            tags::event::TOURNAMENT_ENDED => Self::TournamentEnded {
                 id: u64::read(reader)?,
                 rankings: Vec::<(PublicKey, u64)>::read_range(reader, 0..=1000)?,
             },
 
             // Vault & AMM events (tags 30-36)
-            30 => Self::VaultCreated {
+            tags::event::VAULT_CREATED => Self::VaultCreated {
                 player: PublicKey::read(reader)?,
             },
-            31 => Self::CollateralDeposited {
+            tags::event::COLLATERAL_DEPOSITED => Self::CollateralDeposited {
                 player: PublicKey::read(reader)?,
                 amount: u64::read(reader)?,
                 new_collateral: u64::read(reader)?,
             },
-            32 => Self::VusdtBorrowed {
+            tags::event::VUSDT_BORROWED => Self::VusdtBorrowed {
                 player: PublicKey::read(reader)?,
                 amount: u64::read(reader)?,
                 new_debt: u64::read(reader)?,
             },
-            33 => Self::VusdtRepaid {
+            tags::event::VUSDT_REPAID => Self::VusdtRepaid {
                 player: PublicKey::read(reader)?,
                 amount: u64::read(reader)?,
                 new_debt: u64::read(reader)?,
             },
-            34 => Self::AmmSwapped {
+            tags::event::AMM_SWAPPED => Self::AmmSwapped {
                 player: PublicKey::read(reader)?,
                 is_buying_rng: bool::read(reader)?,
                 amount_in: u64::read(reader)?,
@@ -1492,7 +1618,7 @@ impl Read for Event {
                 reserve_rng: u64::read(reader)?,
                 reserve_vusdt: u64::read(reader)?,
             },
-            35 => Self::LiquidityAdded {
+            tags::event::LIQUIDITY_ADDED => Self::LiquidityAdded {
                 player: PublicKey::read(reader)?,
                 rng_amount: u64::read(reader)?,
                 vusdt_amount: u64::read(reader)?,
@@ -1502,7 +1628,7 @@ impl Read for Event {
                 reserve_vusdt: u64::read(reader)?,
                 lp_balance: u64::read(reader)?,
             },
-            36 => Self::LiquidityRemoved {
+            tags::event::LIQUIDITY_REMOVED => Self::LiquidityRemoved {
                 player: PublicKey::read(reader)?,
                 rng_amount: u64::read(reader)?,
                 vusdt_amount: u64::read(reader)?,
@@ -1512,7 +1638,7 @@ impl Read for Event {
                 reserve_vusdt: u64::read(reader)?,
                 lp_balance: u64::read(reader)?,
             },
-            37 => Self::Staked {
+            tags::event::STAKED => Self::Staked {
                 player: PublicKey::read(reader)?,
                 amount: u64::read(reader)?,
                 duration: u64::read(reader)?,
@@ -1520,14 +1646,14 @@ impl Read for Event {
                 unlock_ts: u64::read(reader)?,
                 voting_power: u128::read(reader)?,
             },
-            38 => Self::Unstaked {
+            tags::event::UNSTAKED => Self::Unstaked {
                 player: PublicKey::read(reader)?,
                 amount: u64::read(reader)?,
             },
-            39 => Self::EpochProcessed {
+            tags::event::EPOCH_PROCESSED => Self::EpochProcessed {
                 epoch: u64::read(reader)?,
             },
-            40 => Self::RewardsClaimed {
+            tags::event::REWARDS_CLAIMED => Self::RewardsClaimed {
                 player: PublicKey::read(reader)?,
                 amount: u64::read(reader)?,
             },
@@ -1700,7 +1826,9 @@ impl EncodeSize for Event {
                 }
                 Self::Unstaked { player, amount } => player.encode_size() + amount.encode_size(),
                 Self::EpochProcessed { epoch } => epoch.encode_size(),
-                Self::RewardsClaimed { player, amount } => player.encode_size() + amount.encode_size(),
+                Self::RewardsClaimed { player, amount } => {
+                    player.encode_size() + amount.encode_size()
+                }
             }
     }
 }

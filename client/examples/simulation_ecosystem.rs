@@ -1018,8 +1018,13 @@ async fn run_monitor(
                                         _ => false,
                                     };
 
-                                    session_bets
-                                        .insert(*session_id, SessionMeta { bet: *bet, is_tournament });
+                                    session_bets.insert(
+                                        *session_id,
+                                        SessionMeta {
+                                            bet: *bet,
+                                            is_tournament,
+                                        },
+                                    );
 
                                     if is_tournament {
                                         metrics.tournament_game_starts += 1;

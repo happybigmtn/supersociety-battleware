@@ -19,9 +19,10 @@ interface ActiveGameProps {
   numberInput: string;
   onToggleHold: (index: number) => void;
   aiAdvice: string | null;
+  actions: any;
 }
 
-export const ActiveGame: React.FC<ActiveGameProps> = ({ gameState, deck, numberInput, onToggleHold, aiAdvice }) => {
+export const ActiveGame: React.FC<ActiveGameProps> = ({ gameState, deck, numberInput, onToggleHold, aiAdvice, actions }) => {
   if (gameState.type === GameType.NONE) {
      return (
          <div className="flex-1 flex flex-col items-center justify-center gap-4">
@@ -37,25 +38,46 @@ export const ActiveGame: React.FC<ActiveGameProps> = ({ gameState, deck, numberI
 
   return (
     <>
+         {gameState.superMode?.isActive && (
+             <div className="absolute top-4 left-4 max-w-sm bg-terminal-black/90 border border-terminal-gold/50 p-3 rounded shadow-lg z-40 text-xs">
+                 <div className="font-bold text-terminal-gold mb-1">SUPER MODE</div>
+                 {Array.isArray(gameState.superMode.multipliers) && gameState.superMode.multipliers.length > 0 ? (
+                     <div className="flex flex-wrap gap-1">
+                         {gameState.superMode.multipliers.slice(0, 10).map((m, idx) => (
+                             <span
+                                 key={idx}
+                                 className="px-2 py-0.5 rounded border border-terminal-gold/30 text-terminal-gold/90"
+                             >
+                                 {m.superType}:{m.id} x{m.multiplier}
+                             </span>
+                         ))}
+                     </div>
+                 ) : (
+                     <div className="text-[10px] text-gray-400">Active</div>
+                 )}
+             </div>
+         )}
+
          <BigWinEffect 
             amount={gameState.lastResult} 
             show={gameState.stage === 'RESULT' && gameState.lastResult > 0} 
+            durationMs={gameState.type === GameType.BLACKJACK ? 500 : undefined}
          />
 
-         {gameState.type === GameType.BLACKJACK && <BlackjackView gameState={gameState} />}
-         {gameState.type === GameType.CRAPS && <CrapsView gameState={gameState} />}
-         {gameState.type === GameType.BACCARAT && <BaccaratView gameState={gameState} />}
-         {gameState.type === GameType.ROULETTE && <RouletteView gameState={gameState} numberInput={numberInput} />}
-         {gameState.type === GameType.SIC_BO && <SicBoView gameState={gameState} numberInput={numberInput} />}
+         {gameState.type === GameType.BLACKJACK && <BlackjackView gameState={gameState} actions={actions} />}
+         {gameState.type === GameType.CRAPS && <CrapsView gameState={gameState} actions={actions} />}
+         {gameState.type === GameType.BACCARAT && <BaccaratView gameState={gameState} actions={actions} />}
+         {gameState.type === GameType.ROULETTE && <RouletteView gameState={gameState} numberInput={numberInput} actions={actions} />}
+         {gameState.type === GameType.SIC_BO && <SicBoView gameState={gameState} numberInput={numberInput} actions={actions} />}
          {gameState.type === GameType.HILO && <HiLoView gameState={gameState} deck={deck} />}
          {gameState.type === GameType.VIDEO_POKER && (
              <VideoPokerView gameState={gameState} onToggleHold={onToggleHold} />
          )}
-         {gameState.type === GameType.THREE_CARD && <ThreeCardPokerView gameState={gameState} />}
-         {gameState.type === GameType.ULTIMATE_HOLDEM && <UltimateHoldemView gameState={gameState} />}
+         {gameState.type === GameType.THREE_CARD && <ThreeCardPokerView gameState={gameState} actions={actions} />}
+         {gameState.type === GameType.ULTIMATE_HOLDEM && <UltimateHoldemView gameState={gameState} actions={actions} />}
 
          {gameState.type === GameType.CASINO_WAR && (
-             <GenericGameView gameState={gameState} />
+             <GenericGameView gameState={gameState} actions={actions} />
          )}
          
          {aiAdvice && (

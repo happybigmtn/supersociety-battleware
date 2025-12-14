@@ -1,5 +1,6 @@
 
 import React from 'react';
+import { NavLink } from 'react-router-dom';
 import { LeaderboardEntry, PlayerStats, GameType } from '../../types';
 import { formatTime, HELP_CONTENT } from '../../utils/gameUtils';
 
@@ -24,6 +25,12 @@ export const Header: React.FC<HeaderProps> = ({ phase, tournamentTime, stats, la
             >
                 {focusMode ? 'FOCUS ON' : 'FOCUS OFF'}
             </button>
+            <NavLink
+                to="/security"
+                className="text-[10px] border px-1.5 py-0.5 rounded transition-colors text-gray-300 bg-gray-900 border-gray-800 hover:border-gray-600 hover:text-white"
+            >
+                PASSKEY
+            </NavLink>
             <span className="text-[10px] text-gray-600 bg-gray-900 border border-gray-800 px-1.5 py-0.5 rounded">[?] HELP</span>
         </div>
     </div>
@@ -50,6 +57,21 @@ export const Header: React.FC<HeaderProps> = ({ phase, tournamentTime, stats, la
                     ))}
                 </div>
             </div>
+            <div className="hidden sm:flex items-center gap-2">
+                <span className="text-gray-500">AURA</span>
+                <div className="flex gap-1">
+                    {[...Array(5)].map((_, i) => (
+                        <div
+                            key={i}
+                            className={`w-2 h-2 rounded-full ${
+                                i < (stats.auraMeter ?? 0)
+                                    ? 'bg-terminal-gold shadow-[0_0_8px_rgba(255,215,0,0.7)]'
+                                    : 'bg-gray-800'
+                            }`}
+                        />
+                    ))}
+                </div>
+            </div>
             {/* Mobile: Compact shields/doubles indicator */}
             <div className="flex sm:hidden items-center gap-1">
                 <div className="flex gap-0.5">
@@ -60,6 +82,16 @@ export const Header: React.FC<HeaderProps> = ({ phase, tournamentTime, stats, la
                 <div className="flex gap-0.5">
                     {[...Array(3)].map((_, i) => (
                         <div key={i} className={`w-1.5 h-1.5 rounded-full ${i < stats.doubles ? 'bg-purple-400' : 'bg-gray-800'}`} />
+                    ))}
+                </div>
+                <div className="flex gap-0.5">
+                    {[...Array(5)].map((_, i) => (
+                        <div
+                            key={i}
+                            className={`w-1.5 h-1.5 rounded-full ${
+                                i < (stats.auraMeter ?? 0) ? 'bg-terminal-gold' : 'bg-gray-800'
+                            }`}
+                        />
                     ))}
                 </div>
             </div>
@@ -481,6 +513,7 @@ export const HelpOverlay: React.FC<HelpOverlayProps> = ({ isOpen, onClose, gameT
                             <div><span className="text-white font-bold">[?]</span> TOGGLE HELP</div>
                             <div><span className="text-white font-bold">[Z]</span> USE SHIELD</div>
                             <div><span className="text-white font-bold">[X]</span> USE DOUBLE</div>
+                            <div><span className="text-white font-bold">[G]</span> SUPER MODE</div>
                             <div><span className="text-white font-bold">[L]</span> LEADERBOARD VIEW</div>
                         </div>
                         <div className="text-[10px] sm:text-xs text-gray-500 mt-2">

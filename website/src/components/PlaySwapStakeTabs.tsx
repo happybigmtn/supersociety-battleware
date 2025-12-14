@@ -25,7 +25,9 @@ export const PlaySwapStakeTabs: React.FC<TabsProps> = ({ className }) => {
       <NavLink to="/stake" className={tabClass}>
         Stake
       </NavLink>
+      <NavLink to="/security" className={tabClass}>
+        Vault
+      </NavLink>
     </nav>
   );
 };
-

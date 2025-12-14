@@ -1,4 +1,5 @@
 use crate::{Adb, Layer, State};
+use anyhow::{anyhow, Context as _};
 use commonware_cryptography::{ed25519::PublicKey, sha256::Digest, Sha256};
 #[cfg(feature = "parallel")]
 use commonware_runtime::ThreadPool;
@@ -38,7 +39,7 @@ pub async fn execute_state_transition<S: Spawner + Storage + Clock + Metrics, T:
     seed: Seed,
     transactions: Vec<Transaction>,
     #[cfg(feature = "parallel")] pool: ThreadPool,
-) -> StateTransitionResult {
+) -> anyhow::Result<StateTransitionResult> {
     // Check if this is the next expected height for state
     let (state_height, mut state_start_op) = state
         .get_metadata()
@@ -53,7 +54,7 @@ pub async fn execute_state_transition<S: Spawner + Storage + Clock + Metrics, T:
     if height != state_height && height != state_height + 1 {
         // Invalid height - return current state without processing
         let mut mmr_hasher = Standard::<Sha256>::new();
-        return StateTransitionResult {
+        return Ok(StateTransitionResult {
             state_root: state.root(&mut mmr_hasher),
             state_start_op: state.op_count(),
             state_end_op: state.op_count(),
@@ -61,7 +62,7 @@ pub async fn execute_state_transition<S: Spawner + Storage + Clock + Metrics, T:
             events_start_op: events.op_count(),
             events_end_op: events.op_count(),
             processed_nonces: BTreeMap::new(),
-        };
+        });
     }
 
     // Get events metadata
@@ -78,7 +79,14 @@ pub async fn execute_state_transition<S: Spawner + Storage + Clock + Metrics, T:
     // Only process if this is the next block
     let mut processed_nonces = BTreeMap::new();
     if height == state_height + 1 {
+        if events_height != state_height {
+            return Err(anyhow!(
+                "state/events height mismatch (state={state_height}, events={events_height}, requested={height})"
+            ));
+        }
+
         state_start_op = state.op_count();
+        events_start_op = events.op_count();
         let mut layer = Layer::new(state, identity, NAMESPACE, seed);
         let (outputs, nonces) = layer
             .execute(
@@ -89,20 +97,20 @@ pub async fn execute_state_transition<S: Spawner + Storage + Clock + Metrics, T:
             .await;
         processed_nonces.extend(nonces);
 
-        // Apply events if this is the next block
-        if height == events_height + 1 {
-            events_start_op = events.op_count();
-            for output in outputs.into_iter() {
-                events.append(output).await.unwrap();
-            }
+        // Events must be committed before state, otherwise we risk wedging on restart.
+        for output in outputs.into_iter() {
             events
-                .commit(Some(Output::Commit {
-                    height,
-                    start: events_start_op,
-                }))
+                .append(output)
                 .await
-                .unwrap();
+                .with_context(|| format!("append event output (height={height})"))?;
         }
+        events
+            .commit(Some(Output::Commit {
+                height,
+                start: events_start_op,
+            }))
+            .await
+            .with_context(|| format!("commit events (height={height})"))?;
 
         // Apply state once we've committed events (can't regenerate after state updated)
         state.apply(layer.commit()).await;
@@ -112,7 +120,7 @@ pub async fn execute_state_transition<S: Spawner + Storage + Clock + Metrics, T:
                 start: state_start_op,
             }))
             .await
-            .unwrap();
+            .with_context(|| format!("commit state (height={height})"))?;
     }
 
     // Compute roots
@@ -122,7 +130,7 @@ pub async fn execute_state_transition<S: Spawner + Storage + Clock + Metrics, T:
     let events_root = events.root(&mut mmr_hasher);
     let events_end_op = events.op_count();
 
-    StateTransitionResult {
+    Ok(StateTransitionResult {
         state_root,
         state_start_op,
         state_end_op,
@@ -130,5 +138,5 @@ pub async fn execute_state_transition<S: Spawner + Storage + Clock + Metrics, T:
         events_start_op,
         events_end_op,
         processed_nonces,
-    }
+    })
 }

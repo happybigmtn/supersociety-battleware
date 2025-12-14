@@ -3,20 +3,21 @@ import React, { useEffect, useState } from 'react';
 interface BigWinEffectProps {
     amount: number;
     show: boolean;
+    durationMs?: number;
 }
 
-export const BigWinEffect: React.FC<BigWinEffectProps> = ({ amount, show }) => {
+export const BigWinEffect: React.FC<BigWinEffectProps> = ({ amount, show, durationMs }) => {
     const [visible, setVisible] = useState(false);
 
     useEffect(() => {
         if (show && amount > 0) {
             setVisible(true);
-            const timer = setTimeout(() => setVisible(false), 3000); // Hide after 3s
+            const timer = setTimeout(() => setVisible(false), durationMs ?? 3000);
             return () => clearTimeout(timer);
         } else {
             setVisible(false);
         }
-    }, [show, amount]);
+    }, [show, amount, durationMs]);
 
     if (!visible) return null;
 

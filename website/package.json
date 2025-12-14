@@ -36,6 +36,7 @@
   "devDependencies": {
     "jsdom": "^26.1.0",
     "node-fetch": "^3.3.2",
+    "playwright-core": "^1.49.0",
     "ws": "^8.18.3"
   }
 }

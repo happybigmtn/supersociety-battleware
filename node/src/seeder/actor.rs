@@ -47,7 +47,7 @@ impl<R: Storage + Metrics + Clock + Spawner + GClock + RngCore, I: Indexer> Acto
     pub fn new(context: R, config: Config<I>) -> (Self, Mailbox) {
         // Create mailbox
         let (sender, mailbox) = mpsc::channel(config.mailbox_size);
-        let inbound = Mailbox::new(sender);
+        let inbound = Mailbox::new(sender, context.stopped());
 
         (
             Self {
@@ -310,7 +310,7 @@ impl<R: Storage + Metrics + Clock + Spawner + GClock + RngCore, I: Indexer> Acto
                             attempts += 1;
                         }
                         debug!(view, attempts, "seed uploaded to indexer");
-                        channel.uploaded(view).await;
+                        let _ = channel.uploaded(view).await;
                     }
                 });
 

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { GameType } from './types';
 import { useTerminalGame } from './hooks/useTerminalGame';
 import { useKeyboardControls } from './hooks/useKeyboardControls';
@@ -51,6 +51,13 @@ export default function CasinoApp() {
       inputRefs: { input: inputRef, customBet: customBetRef },
       sortedGames: SORTED_GAMES
   });
+
+  // Ensure number input is cleared whenever a numeric-input mode opens.
+  useEffect(() => {
+    if (gameState.rouletteInputMode !== 'NONE' || gameState.sicBoInputMode !== 'NONE') {
+      setNumberInputString('');
+    }
+  }, [gameState.rouletteInputMode, gameState.sicBoInputMode]);
 
   // Handle Enter in Inputs
   const handleCommandEnter = () => {
@@ -196,6 +203,7 @@ export default function CasinoApp() {
                   numberInput={numberInputString}
                   onToggleHold={actions.toggleHold}
                   aiAdvice={aiAdvice}
+                  actions={{ ...actions, setGameState }}
                />
              </ErrorBoundary>
           </main>

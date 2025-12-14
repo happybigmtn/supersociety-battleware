@@ -114,7 +114,7 @@ impl Indexer for Mock {
 
     async fn submit_summary(&self, summary: Summary) -> Result<(), Self::Error> {
         // Verify the summary
-        assert!(summary.verify(&self.identity).is_some());
+        assert!(summary.verify(&self.identity).is_ok());
 
         // Store the summary
         let mut summaries = self.summaries.write().await;

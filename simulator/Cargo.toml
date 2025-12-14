@@ -35,3 +35,11 @@ thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+nullspace-execution = { workspace = true, features = ["mocks"] }
+
+[features]
+default = []
+passkeys = []

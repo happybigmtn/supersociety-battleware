@@ -15,6 +15,7 @@ interface CasinoClientWithNonceManager extends CasinoClient {
     submitCasinoGameMove: (sessionId: bigint, payload: Uint8Array) => Promise<{ txHash?: string }>;
     submitCasinoToggleShield: () => Promise<{ txHash?: string }>;
     submitCasinoToggleDouble: () => Promise<{ txHash?: string }>;
+    submitCasinoToggleSuper: () => Promise<{ txHash?: string }>;
   };
 }
 
@@ -403,6 +404,14 @@ export class CasinoChainService {
    */
   async toggleDouble(): Promise<{ txHash?: string }> {
     const result = await this.client.nonceManager.submitCasinoToggleDouble();
+    return { txHash: result.txHash };
+  }
+
+  /**
+   * Toggle super/aura mode modifier
+   */
+  async toggleSuper(): Promise<{ txHash?: string }> {
+    const result = await this.client.nonceManager.submitCasinoToggleSuper();
     return { txHash: result.txHash };
   }
 

@@ -97,6 +97,8 @@ pub struct Actor<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: In
     buffer_pool: PoolRef,
     indexer: I,
     execution_concurrency: usize,
+    mempool_max_backlog: usize,
+    mempool_max_transactions: usize,
 }
 
 impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor<R, I> {
@@ -130,6 +132,8 @@ impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor
                 buffer_pool: config.buffer_pool,
                 indexer: config.indexer,
                 execution_concurrency: config.execution_concurrency,
+                mempool_max_backlog: config.mempool_max_backlog,
+                mempool_max_transactions: config.mempool_max_transactions,
             },
             view_supervisor,
             epoch_supervisor,
@@ -306,7 +310,11 @@ impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor
         let built = Arc::new(Mutex::new(built));
 
         // Initialize mempool
-        let mut mempool = Mempool::new(self.context.with_label("mempool"));
+        let mut mempool = Mempool::new_with_limits(
+            self.context.with_label("mempool"),
+            self.mempool_max_backlog,
+            self.mempool_max_transactions,
+        );
 
         // Use reconnecting indexer wrapper
         let reconnecting_indexer = crate::indexer::ReconnectingIndexer::new(
@@ -403,7 +411,7 @@ impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor
                                     // Apply transaction nonces to state
                                     for tx in &block.transactions {
                                         // We don't care if the nonces are valid or not, we just need to ensure we'll process tip the same way as state will be processed during finalization
-                                        noncer.prepare(tx).await;
+                                        let _ = noncer.prepare(tx).await;
                                     }
                                 }
 
@@ -418,7 +426,7 @@ impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor
                                     considered += 1;
 
                                     // Attempt to apply
-                                    if !noncer.prepare(&tx).await {
+                                    if noncer.prepare(&tx).await.is_err() {
                                         continue;
                                     }
 
@@ -547,7 +555,13 @@ impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor
                                     let mut inbound = self.inbound.clone();
                                     let mut seeder = seeder.clone();
                                     move |_| async move {
-                                        let seed = seeder.get(block.view).await;
+                                        let seed = match seeder.get(block.view).await {
+                                            Ok(seed) => seed,
+                                            Err(err) => {
+                                                warn!(?err, view = block.view, "failed to fetch seed");
+                                                return;
+                                            }
+                                        };
                                         drop(seeded_timer);
                                         inbound.seeded(block, seed, finalize_timer, response).await;
                                     }
@@ -573,7 +587,12 @@ impl<R: Rng + CryptoRng + Spawner + Metrics + Clock + Storage, I: Indexer> Actor
                                     seed,
                                     block.transactions,
                                     execution_pool.clone(),
-                                ).await;
+                                )
+                                .await
+                                .unwrap_or_else(|err| {
+                                    warn!(?err, height, "state transition failed");
+                                    panic!("state transition failed: {err:?}");
+                                });
                                 drop(execute_timer);
 
                                 // Update metrics

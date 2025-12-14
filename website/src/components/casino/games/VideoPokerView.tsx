@@ -29,7 +29,7 @@ export const VideoPokerView = React.memo<VideoPokerViewProps>(({ gameState, onTo
                     {gameState.playerCards.length > 0 && gameState.playerCards.map((card, i) => (
                         <div key={i} className="flex flex-col gap-2 cursor-pointer transition-transform hover:-translate-y-2" onClick={() => handleToggleHold(i)}>
                              <Hand cards={[card]} />
-                             <div className={`text-center text-[10px] font-bold py-1 border rounded ${card.isHidden ? 'border-terminal-green text-terminal-green bg-terminal-green/10' : 'border-transparent text-transparent'}`}>
+                             <div className={`text-center text-[10px] font-bold py-1 border rounded ${card.isHeld ? 'border-terminal-green text-terminal-green bg-terminal-green/10' : 'border-transparent text-transparent'}`}>
                                  HOLD
                              </div>
                              <div className="text-center text-[10px] text-gray-600">[{i+1}]</div>
@@ -39,7 +39,7 @@ export const VideoPokerView = React.memo<VideoPokerViewProps>(({ gameState, onTo
             </div>
 
             {/* CONTROLS */}
-            <div className="absolute bottom-8 left-0 right-0 h-16 bg-terminal-black/90 border-t-2 border-gray-700 flex items-center justify-center gap-2 p-2 z-40">
+            <div className="absolute bottom-8 left-0 right-0 h-16 bg-terminal-black/90 border-t-2 border-gray-700 flex items-center justify-start md:justify-center gap-2 p-2 z-40 overflow-x-auto">
                     <div className="flex gap-2">
                         {[1,2,3,4,5].map(n => (
                             <div key={n} className="flex flex-col items-center border border-terminal-dim rounded bg-black/50 px-3 py-1">

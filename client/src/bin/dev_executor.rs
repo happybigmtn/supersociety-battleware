@@ -8,6 +8,7 @@
 
 use clap::Parser;
 use commonware_codec::DecodeExt;
+use commonware_consensus::Viewable;
 use commonware_runtime::{tokio as cw_tokio, Runner};
 use futures_util::StreamExt;
 use nullspace_client::Client;
@@ -70,9 +71,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Create state and events databases (persistent across reconnections)
         let (mut state, mut events) = create_adbs(&context).await;
         let mut pending_txs: Vec<Transaction> = Vec::new();
-        let mut view: u64 = 1;
+        let mut view: u64 = match client.query_seed(api::Query::Latest).await {
+            Ok(Some(seed)) => seed.view() + 1,
+            Ok(None) => 1,
+            Err(e) => {
+                warn!(?e, "Failed to query latest seed, assuming new chain");
+                1
+            }
+        };
         let block_interval = Duration::from_millis(block_interval_ms);
         let mut last_block_time = std::time::Instant::now();
+
+        // Bootstrap the chain with a genesis block (empty txs) if needed so the frontend
+        // doesn't report CHAIN_OFFLINE before any user transactions arrive.
+        if view == 1 {
+            info!("No existing seed found, submitting genesis block");
+            let (seed, summary) = execute_block(
+                &network_secret,
+                network_identity,
+                &mut state,
+                &mut events,
+                view,
+                Vec::new(),
+            )
+            .await;
+
+            if let Err(err) = summary.verify(&network_identity) {
+                warn!(?err, "Genesis summary verification failed");
+            }
+
+            if let Err(e) = client.submit_seed(seed).await {
+                warn!(?e, "Failed to submit genesis seed");
+            }
+            if let Err(e) = client.submit_summary(summary).await {
+                warn!(?e, "Failed to submit genesis summary");
+            }
+
+            info!(view, "Genesis block executed and submitted");
+            view += 1;
+        }
 
         // Outer reconnection loop
         loop {
@@ -170,10 +207,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .await;
 
                         // Verify and get digests
-                        let Some((_state_digests, _events_digests)) = summary.verify(&network_identity) else {
-                            warn!("Summary verification failed");
-                            last_block_time = std::time::Instant::now();
-                            continue;
+                        let (_state_digests, _events_digests) = match summary.verify(&network_identity) {
+                            Ok(digests) => digests,
+                            Err(err) => {
+                                warn!(?err, "Summary verification failed");
+                                last_block_time = std::time::Instant::now();
+                                continue;
+                            }
                         };
 
                         // Submit seed first

@@ -245,9 +245,7 @@ impl CasinoGame for VideoPoker {
 
         if multiplier > 0 {
             // Pay tables are expressed "to 1" (winnings). Our executor expects TOTAL RETURN.
-            let base_winnings = session
-                .bet
-                .saturating_mul(multiplier.saturating_add(1));
+            let base_winnings = session.bet.saturating_mul(multiplier.saturating_add(1));
             // Apply super mode multipliers if active
             let final_winnings = if session.super_mode.is_active {
                 apply_super_multiplier_cards(&cards, &session.super_mode.multipliers, base_winnings)

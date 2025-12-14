@@ -1,6 +1,7 @@
 import { WasmWrapper } from './wasm.js';
 import { NonceManager } from './nonceManager.js';
 import { snakeToCamel } from '../utils/caseNormalizer.js';
+import { getUnlockedVault } from '../security/vaultRuntime';
 
 // Delay between fetch retries
 const FETCH_RETRY_DELAY_MS = 1000;
@@ -305,42 +306,76 @@ export class CasinoClient {
       }
       const filterHex = this.wasm.bytesToHex(filterBytes);
 
-      let wsUrl;
-      // Try to use VITE_URL directly for WebSocket to bypass proxy issues
+      // Compute multiple candidate URLs:
+      // - Prefer same-origin proxy (`/api`) so localhost setups and port-forwards work reliably.
+      // - Fall back to VITE_URL direct connection if proxy isn't available.
+      const candidates = [];
+
+      if (typeof window !== 'undefined' && this.baseUrl && !this.baseUrl.startsWith('http://') && !this.baseUrl.startsWith('https://')) {
+        const proxyWsUrl = window.location.protocol === 'https:'
+          ? `wss://${window.location.host}${this.baseUrl}/updates/${filterHex}`
+          : `ws://${window.location.host}${this.baseUrl}/updates/${filterHex}`;
+        candidates.push(proxyWsUrl);
+      }
+
+      // Try to use VITE_URL directly for WebSocket (useful when no proxy is configured).
       const directUrl = import.meta.env.VITE_URL;
       if (directUrl) {
-        // Use the direct backend URL for WebSocket connections
-        const url = new URL(directUrl);
-        wsUrl = url.protocol === 'https:'
-          ? `wss://${url.host}/updates/${filterHex}`
-          : `ws://${url.host}/updates/${filterHex}`;
+        try {
+          const url = new URL(directUrl);
+          const directWsUrl = url.protocol === 'https:'
+            ? `wss://${url.host}/updates/${filterHex}`
+            : `ws://${url.host}/updates/${filterHex}`;
+          if (!candidates.includes(directWsUrl)) candidates.push(directWsUrl);
+        } catch (e) {
+          console.warn('Invalid VITE_URL for WebSocket:', directUrl, e);
+        }
       } else if (this.baseUrl.startsWith('http://') || this.baseUrl.startsWith('https://')) {
         // Full URL provided, convert to WebSocket URL
         const url = new URL(this.baseUrl);
-        wsUrl = url.protocol === 'https:'
+        const wsUrl = url.protocol === 'https:'
           ? `wss://${url.host}/updates/${filterHex}`
           : `ws://${url.host}/updates/${filterHex}`;
-      } else {
-        // Relative URL, use window.location
-        wsUrl = window.location.protocol === 'https:'
-          ? `wss://${window.location.host}${this.baseUrl}/updates/${filterHex}`
-          : `ws://${window.location.host}${this.baseUrl}/updates/${filterHex}`;
+        if (!candidates.includes(wsUrl)) candidates.push(wsUrl);
       }
 
-      console.log('Connecting to Updates WebSocket at:', wsUrl, 'with filter:', publicKey ? 'account' : 'all');
-      this.updatesWs = new WebSocket(wsUrl);
+      if (candidates.length === 0) {
+        reject(new Error('No WebSocket URL candidates available'));
+        return;
+      }
 
-      this.updatesWs.onopen = () => {
-        console.log('Updates WebSocket connected successfully');
-        resolve();
-      };
+      const connectAt = (index) => {
+        const wsUrl = candidates[index];
+        console.log('Connecting to Updates WebSocket at:', wsUrl, 'with filter:', publicKey ? 'account' : 'all');
+        const ws = new WebSocket(wsUrl);
+        this.updatesWs = ws;
 
-      this.updatesWs.onerror = (error) => {
-        console.error('Updates WebSocket error:', error);
-        console.error('WebSocket URL was:', wsUrl);
-        console.error('WebSocket readyState:', this.updatesWs.readyState);
-        reject(new Error(`WebSocket connection failed to ${wsUrl}`));
-      };
+        ws.onopen = () => {
+          console.log('Updates WebSocket connected successfully');
+          resolve();
+        };
+
+        ws.onerror = (error) => {
+          console.error('Updates WebSocket error:', error);
+          console.error('WebSocket URL was:', wsUrl);
+          console.error('WebSocket readyState:', ws.readyState);
+
+          try {
+            ws.onclose = null;
+            ws.close();
+          } catch {
+            // ignore
+          }
+
+          // Fall back to next candidate if available.
+          if (index + 1 < candidates.length) {
+            console.warn('Falling back to next WebSocket candidate...');
+            connectAt(index + 1);
+            return;
+          }
+
+          reject(new Error(`WebSocket connection failed to ${wsUrl}`));
+        };
 
       this.updatesWs.onmessage = async (event) => {
         console.log('[WebSocket] Received message, data type:', typeof event.data, event.data instanceof Blob ? 'Blob' : 'not Blob');
@@ -399,6 +434,9 @@ export class CasinoClient {
         console.log('Updates WebSocket disconnected, code:', event.code, 'reason:', event.reason);
         this.handleReconnect('updatesWs', () => this.connectUpdates(this.currentUpdateFilter));
       };
+      };
+
+      connectAt(0);
     });
   }
 
@@ -708,33 +746,61 @@ export class CasinoClient {
    *          In production, consider using more secure storage methods.
    */
   getOrCreateKeypair() {
-    // Security warning for development
-    if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-      console.warn('WARNING: Private keys are stored in localStorage. This is not secure for production use.');
+    const vaultEnabled =
+      typeof window !== 'undefined' && localStorage.getItem('nullspace_vault_enabled') === 'true';
+    const unlockedVault = (() => {
+      try {
+        return getUnlockedVault();
+      } catch {
+        return null;
+      }
+    })();
+
+    // If the user has enabled a passkey vault, require it to be unlocked for signing.
+    if (vaultEnabled && !unlockedVault) {
+      console.warn('[CasinoClient] Passkey vault enabled but locked. Unlock via /security.');
+      return null;
     }
 
-    // Check if we have a stored private key in localStorage
-    const storedPrivateKeyHex = localStorage.getItem('casino_private_key');
-
-    if (storedPrivateKeyHex) {
-      // Convert hex string back to bytes
-      const privateKeyBytes = new Uint8Array(storedPrivateKeyHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-      this.wasm.createKeypair(privateKeyBytes);
-      console.log('Loaded keypair from storage');
+    if (unlockedVault?.nullspaceEd25519PrivateKey) {
+      this.wasm.createKeypair(unlockedVault.nullspaceEd25519PrivateKey);
+      console.log('Loaded keypair from passkey vault');
     } else {
-      // Let WASM generate a new keypair using the browser's crypto API
-      this.wasm.createKeypair();
+      // Security warning for development (legacy mode)
+      if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+        console.warn('WARNING: Private keys are stored in localStorage. This is not secure for production use.');
+      }
 
-      // Store the private key for persistence (Note: In production, consider more secure storage)
-      const privateKeyHex = this.wasm.getPrivateKeyHex();
-      localStorage.setItem('casino_private_key', privateKeyHex);
-      console.log('Generated new keypair using browser crypto API and saved to localStorage');
+      // Check if we have a stored private key in localStorage
+      const storedPrivateKeyHex = localStorage.getItem('casino_private_key');
+
+      if (storedPrivateKeyHex) {
+        // Convert hex string back to bytes
+        const privateKeyBytes = new Uint8Array(storedPrivateKeyHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+        this.wasm.createKeypair(privateKeyBytes);
+        console.log('Loaded keypair from storage');
+      } else {
+        // Let WASM generate a new keypair using the browser's crypto API
+        this.wasm.createKeypair();
+
+        // Store the private key for persistence (Note: In production, consider more secure storage)
+        const privateKeyHex = this.wasm.getPrivateKeyHex();
+        localStorage.setItem('casino_private_key', privateKeyHex);
+        console.log('Generated new keypair using browser crypto API and saved to localStorage');
+      }
     }
 
     const keypair = {
       publicKey: this.wasm.getPublicKeyBytes(),
       publicKeyHex: this.wasm.getPublicKeyHex()
     };
+
+    // Store non-secret identifier for the current keypair.
+    try {
+      localStorage.setItem('casino_public_key_hex', keypair.publicKeyHex);
+    } catch {
+      // ignore
+    }
 
     console.log('Using keypair with public key:', keypair.publicKeyHex);
 

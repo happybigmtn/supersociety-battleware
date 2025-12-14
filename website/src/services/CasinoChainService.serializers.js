@@ -77,6 +77,14 @@ export function serializeCasinoToggleDouble() {
 }
 
 /**
+ * Tag 30: CasinoToggleSuper
+ * Binary: [30]
+ */
+export function serializeCasinoToggleSuper() {
+  return new Uint8Array([30]);
+}
+
+/**
  * Tag 16: CasinoJoinTournament
  * Binary: [16] [tournamentId:u64 BE]
  */

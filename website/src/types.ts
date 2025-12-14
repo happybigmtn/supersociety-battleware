@@ -7,6 +7,7 @@ export interface Card {
   rank: Rank;
   value: number;
   isHidden?: boolean;
+  isHeld?: boolean;
 }
 
 export enum GameType {
@@ -29,6 +30,7 @@ export interface PlayerStats {
   chips: number;
   shields: number;
   doubles: number;
+  auraMeter?: number;
   rank: number;
   history: string[];
   pnlByGame: Record<string, number>;
@@ -102,6 +104,8 @@ export interface SicBoBet {
     type:
       | 'BIG'
       | 'SMALL'
+      | 'ODD'
+      | 'EVEN'
       | 'TRIPLE_ANY'
       | 'TRIPLE_SPECIFIC'
       | 'DOUBLE_SPECIFIC'
@@ -127,6 +131,7 @@ export interface GameState {
   
   // Craps
   crapsPoint: number | null;
+  crapsEpochPointEstablished: boolean;
   crapsBets: CrapsBet[];
   crapsUndoStack: CrapsBet[][]; // History of bet arrays for current turn
   crapsInputMode: 'NONE' | 'YES' | 'NO' | 'NEXT' | 'HARDWAY' | 'BUY'; // Replaces string buffer
@@ -162,6 +167,7 @@ export interface GameState {
   activeModifiers: {
     shield: boolean;
     double: boolean;
+    super?: boolean;
   };
   
   // Baccarat
@@ -180,11 +186,13 @@ export interface GameState {
   threeCardPairPlusBet: number;
   threeCardSixCardBonusBet: number;
   threeCardProgressiveBet: number;
+  threeCardProgressiveJackpot: number;
 
   // Ultimate Texas Hold'em
   uthTripsBet: number;
   uthSixCardBonusBet: number;
   uthProgressiveBet: number;
+  uthProgressiveJackpot: number;
   uthBonusCards: Card[];
 
   // Casino War
@@ -197,6 +205,13 @@ export interface GameState {
   // Session Tracking
   sessionWager: number;
   sessionInterimPayout: number; // Mid-game credits not reflected in completion payout
+
+  // Super/Aura mode (on-chain)
+  superMode?: {
+    isActive: boolean;
+    streakLevel: number;
+    multipliers: Array<{ id: number; multiplier: number; superType: string }>;
+  } | null;
 }
 
 export interface LeaderboardEntry {

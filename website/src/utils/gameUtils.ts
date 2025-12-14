@@ -602,9 +602,15 @@ export const resolveRouletteBets = (
 // True odds payout for PASS odds (matches on-chain craps.rs)
 const crapsPassOddsPayout = (point: number, oddsAmount: number): number => {
     switch (point) {
-        case 4: case 10: return oddsAmount * 2; // 2:1
-        case 5: case 9: return oddsAmount * 1.5; // 3:2
-        case 6: case 8: return oddsAmount * 1.2; // 6:5
+        case 4:
+        case 10:
+            return oddsAmount * 2; // 2:1
+        case 5:
+        case 9:
+            return Math.floor((oddsAmount * 3) / 2); // 3:2
+        case 6:
+        case 8:
+            return Math.floor((oddsAmount * 6) / 5); // 6:5
         default: return 0;
     }
 };
@@ -612,37 +618,63 @@ const crapsPassOddsPayout = (point: number, oddsAmount: number): number => {
 // True odds payout for DONT_PASS odds (inverse of pass odds)
 const crapsDontPassOddsPayout = (point: number, oddsAmount: number): number => {
     switch (point) {
-        case 4: case 10: return oddsAmount * 0.5; // 1:2
-        case 5: case 9: return oddsAmount * (2/3); // 2:3
-        case 6: case 8: return oddsAmount * (5/6); // 5:6
+        case 4:
+        case 10:
+            return Math.floor(oddsAmount / 2); // 1:2
+        case 5:
+        case 9:
+            return Math.floor((oddsAmount * 2) / 3); // 2:3
+        case 6:
+        case 8:
+            return Math.floor((oddsAmount * 5) / 6); // 5:6
         default: return 0;
     }
 };
 
-// YES (Place) bet payout with 1% commission - matches on-chain
+const applyCrapsCommission1Pct = (winnings: number): number => winnings - Math.floor(winnings / 100);
+
+// YES (Place) bet payout (profit only) with a 1% commission on winnings - matches on-chain rounding
 const crapsYesPayout = (target: number, amount: number): number => {
     let trueOdds = 0;
     switch (target) {
-        case 4: case 10: trueOdds = amount * 2; break; // 2:1
-        case 5: case 9: trueOdds = amount * 1.5; break; // 3:2
-        case 6: case 8: trueOdds = amount * 1.2; break; // 6:5
-        default: trueOdds = amount;
+        case 4:
+        case 10:
+            trueOdds = amount * 2; // 2:1
+            break;
+        case 5:
+        case 9:
+            trueOdds = Math.floor((amount * 3) / 2); // 3:2
+            break;
+        case 6:
+        case 8:
+            trueOdds = Math.floor((amount * 6) / 5); // 6:5
+            break;
+        default:
+            trueOdds = amount;
     }
-    // 1% commission on winnings
-    return trueOdds * 0.99;
+    return applyCrapsCommission1Pct(trueOdds);
 };
 
-// NO (Lay) bet payout with 1% commission - matches on-chain
+// NO (Lay) bet payout (profit only) with a 1% commission on winnings - matches on-chain rounding
 const crapsNoPayout = (target: number, amount: number): number => {
     let trueOdds = 0;
     switch (target) {
-        case 4: case 10: trueOdds = amount * 0.5; break; // 1:2
-        case 5: case 9: trueOdds = amount * (2/3); break; // 2:3
-        case 6: case 8: trueOdds = amount * (5/6); break; // 5:6
-        default: trueOdds = amount;
+        case 4:
+        case 10:
+            trueOdds = Math.floor(amount / 2); // 1:2
+            break;
+        case 5:
+        case 9:
+            trueOdds = Math.floor((amount * 2) / 3); // 2:3
+            break;
+        case 6:
+        case 8:
+            trueOdds = Math.floor((amount * 5) / 6); // 5:6
+            break;
+        default:
+            trueOdds = amount;
     }
-    // 1% commission on winnings
-    return trueOdds * 0.99;
+    return applyCrapsCommission1Pct(trueOdds);
 };
 
 // BUY bet payout (profit only) - matches on-chain (commission charged separately at placement)
@@ -655,7 +687,7 @@ const crapsBuyPayout = (target: number, amount: number): number => {
     }
 };
 
-// NEXT (Hop) bet payout with 1% commission - matches on-chain
+// NEXT (Hop) bet payout (profit only) with a 1% commission on winnings - matches on-chain rounding
 const crapsNextPayout = (target: number, amount: number): number => {
     const ways = WAYS[target] || 0;
     let multiplier = 0;
@@ -668,7 +700,8 @@ const crapsNextPayout = (target: number, amount: number): number => {
         case 6: multiplier = 5; break;  // 7
         default: multiplier = 1;
     }
-    return amount * multiplier * 0.99; // 1% commission
+    const winnings = amount * multiplier;
+    return applyCrapsCommission1Pct(winnings);
 };
 
 // Hardway bet payout - matches on-chain
@@ -812,13 +845,16 @@ export const calculateCrapsExposure = (total: number, point: number | null, bets
  * Bets are resolved (removed) when they win or lose
  * Uses the same payout calculations as on-chain craps.rs
  */
-export const resolveCrapsBets = (total: number, point: number | null, bets: CrapsBet[]): { pnl: number; remainingBets: CrapsBet[]; results: string[] } => {
+export const resolveCrapsBets = (
+    totalOrDice: number | [number, number],
+    point: number | null,
+    bets: CrapsBet[]
+): { pnl: number; remainingBets: CrapsBet[]; results: string[] } => {
     let pnl = 0;
     const remainingBets: CrapsBet[] = [];
     const results: string[] = [];
-    const d1 = Math.ceil(total / 2);
-    const d2 = total - d1;
-    const isHard = d1 === d2;
+    const total = Array.isArray(totalOrDice) ? (totalOrDice[0] + totalOrDice[1]) : totalOrDice;
+    const isHard = Array.isArray(totalOrDice) ? (totalOrDice[0] === totalOrDice[1]) : (total % 2 === 0);
 
     bets.forEach(bet => {
         let resolved = false;
@@ -1025,6 +1061,7 @@ export const getSicBoCombinations = (): { total: number; combo: number[]; isTrip
 // Sic Bo payout table for Total bets - matches on-chain sic_bo.rs
 const sicBoTotalPayout = (total: number): number => {
     switch (total) {
+        case 3: case 18: return 180;
         case 4: case 17: return 50;
         case 5: case 16: return 18;
         case 6: case 15: return 14;
@@ -1145,14 +1182,16 @@ export const calculateSicBoOutcomeExposure = (combo: number[], bets: SicBoBet[])
     const isTriple = d1 === d2 && d2 === d3;
     const isDistinct = d1 !== d2 && d1 !== d3 && d2 !== d3;
 
-    bets.forEach(b => {
-         let win = 0;
-         if (b.type === 'SMALL' && sum >= 4 && sum <= 10 && !isTriple) win = b.amount;
-         else if (b.type === 'BIG' && sum >= 11 && sum <= 17 && !isTriple) win = b.amount;
-         else if (b.type === 'SUM' && sum === b.target) win = b.amount * sicBoTotalPayout(sum);
-         else if (b.type === 'TRIPLE_ANY' && isTriple) win = b.amount * 24;
-         else if (b.type === 'TRIPLE_SPECIFIC' && isTriple && d1 === b.target) win = b.amount * 150;
-         else if (b.type === 'DOUBLE_SPECIFIC') {
+	    bets.forEach(b => {
+	         let win = 0;
+	         if (b.type === 'SMALL' && sum >= 4 && sum <= 10 && !isTriple) win = b.amount;
+	         else if (b.type === 'BIG' && sum >= 11 && sum <= 17 && !isTriple) win = b.amount;
+	         else if (b.type === 'ODD' && sum % 2 === 1 && !isTriple) win = b.amount;
+	         else if (b.type === 'EVEN' && sum % 2 === 0 && !isTriple) win = b.amount;
+	         else if (b.type === 'SUM' && sum === b.target) win = b.amount * sicBoTotalPayout(sum);
+	         else if (b.type === 'TRIPLE_ANY' && isTriple) win = b.amount * 24;
+	         else if (b.type === 'TRIPLE_SPECIFIC' && isTriple && d1 === b.target) win = b.amount * 150;
+	         else if (b.type === 'DOUBLE_SPECIFIC') {
              const count = [d1, d2, d3].filter(d => d === b.target).length;
              if (count >= 2) win = b.amount * 8;
          }
@@ -1208,14 +1247,16 @@ export const resolveSicBoBets = (combo: number[], bets: SicBoBet[]): { pnl: numb
     const isTriple = d1 === d2 && d2 === d3;
     const isDistinct = d1 !== d2 && d1 !== d3 && d2 !== d3;
 
-    bets.forEach(b => {
-         let win = 0;
-         if (b.type === 'SMALL' && sum >= 4 && sum <= 10 && !isTriple) win = b.amount;
-         else if (b.type === 'BIG' && sum >= 11 && sum <= 17 && !isTriple) win = b.amount;
-         else if (b.type === 'SUM' && sum === b.target) win = b.amount * sicBoTotalPayout(sum);
-         else if (b.type === 'TRIPLE_ANY' && isTriple) win = b.amount * 24;
-         else if (b.type === 'TRIPLE_SPECIFIC' && isTriple && d1 === b.target) win = b.amount * 150;
-         else if (b.type === 'DOUBLE_SPECIFIC') {
+	    bets.forEach(b => {
+	         let win = 0;
+	         if (b.type === 'SMALL' && sum >= 4 && sum <= 10 && !isTriple) win = b.amount;
+	         else if (b.type === 'BIG' && sum >= 11 && sum <= 17 && !isTriple) win = b.amount;
+	         else if (b.type === 'ODD' && sum % 2 === 1 && !isTriple) win = b.amount;
+	         else if (b.type === 'EVEN' && sum % 2 === 0 && !isTriple) win = b.amount;
+	         else if (b.type === 'SUM' && sum === b.target) win = b.amount * sicBoTotalPayout(sum);
+	         else if (b.type === 'TRIPLE_ANY' && isTriple) win = b.amount * 24;
+	         else if (b.type === 'TRIPLE_SPECIFIC' && isTriple && d1 === b.target) win = b.amount * 150;
+	         else if (b.type === 'DOUBLE_SPECIFIC') {
              const count = [d1, d2, d3].filter(d => d === b.target).length;
              if (count >= 2) win = b.amount * 8;
          }

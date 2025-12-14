@@ -1,8 +1,8 @@
 
-import React, { useMemo, useCallback } from 'react';
+import React, { useCallback } from 'react';
 import { GameState, Card } from '../../../types';
 import { Hand } from '../GameComponents';
-import { calculateHiLoProjection } from '../../../utils/gameUtils';
+import { getHiLoRank } from '../../../utils/gameUtils';
 
 interface HiLoViewProps {
     gameState: GameState;
@@ -10,60 +10,36 @@ interface HiLoViewProps {
 }
 
 export const HiLoView = React.memo<HiLoViewProps>(({ gameState, deck }) => {
-    const projections = useMemo(() =>
-        calculateHiLoProjection(gameState.playerCards, deck, gameState.hiloAccumulator),
-        [gameState.playerCards, deck, gameState.hiloAccumulator]
+    // Keep the prop for compatibility (other games use the shared deck), but HiLo projections
+    // must not depend on the local deck (on-chain play doesn't have a local deck).
+    void deck;
+
+    const nextGuessMultiplier = useCallback(
+        (guess: 'HIGHER' | 'LOWER') => {
+            const currentCard = gameState.playerCards[gameState.playerCards.length - 1];
+            if (!currentCard) return '0.00x';
+
+            // Match on-chain hilo.rs `calculate_multiplier`:
+            // multiplier_bps = floor(13 * 10000 / wins)
+            const rank = getHiLoRank(currentCard); // 1..13
+            const wins = guess === 'HIGHER' ? (13 - rank) : (rank - 1);
+            if (wins <= 0) return '—';
+
+            const bps = Math.floor((13 * 10_000) / wins);
+            return (bps / 10_000).toFixed(2) + 'x';
+        },
+        [gameState.playerCards]
     );
-
-    const getHiLoMultiplier = useCallback((potentialPayout: number) => {
-        if (potentialPayout <= 0 || gameState.hiloAccumulator <= 0) return "0.00x";
-        return (potentialPayout / gameState.hiloAccumulator).toFixed(2) + "x";
-    }, [gameState.hiloAccumulator]);
-
-    // Chart Data Generation
-    const chartData = useMemo(() => {
-        const data = gameState.hiloGraphData;
-        const maxVal = Math.max(...data, gameState.hiloAccumulator * 1.5, 100);
-        const width = 300;
-        const height = 60;
-
-        const points = data.map((val, i) => {
-            const x = (i / (Math.max(data.length - 1, 1))) * width;
-            const y = height - ((val / maxVal) * height);
-            return `${x},${y}`;
-        }).join(' ');
-
-        return { data, maxVal, width, height, points };
-    }, [gameState.hiloGraphData, gameState.hiloAccumulator]);
 
     return (
         <>
             <div className="flex-1 w-full flex flex-col items-center justify-center gap-8 relative z-10 pb-20">
                 <h1 className="absolute top-0 text-xl font-bold text-gray-500 tracking-widest uppercase">HILO</h1>
                 
-                {/* TOP: POT & CHART */}
-                <div className="min-h-[120px] flex flex-col items-center justify-center w-full max-w-md">
+                {/* TOP: POT */}
+                <div className="min-h-[80px] flex flex-col items-center justify-center w-full max-w-md">
                      <div className="text-3xl text-terminal-gold font-bold mb-2 tracking-widest">
                          POT: ${gameState.hiloAccumulator.toLocaleString()}
-                     </div>
-                     
-                     {/* Line Chart */}
-                     <div className="w-full h-[60px] border border-gray-800 bg-black/50 relative overflow-hidden rounded">
-                         <svg width="100%" height="100%" viewBox={`0 0 ${chartData.width} ${chartData.height}`} preserveAspectRatio="none">
-                             <polyline
-                                 points={chartData.points}
-                                 fill="none"
-                                 stroke={gameState.lastResult < 0 ? '#ff003c' : '#00ff41'}
-                                 strokeWidth="2"
-                             />
-                             {chartData.data.map((val, i) => {
-                                 const x = (i / (Math.max(chartData.data.length - 1, 1))) * chartData.width;
-                                 const y = chartData.height - ((val / chartData.maxVal) * chartData.height);
-                                 return (
-                                     <circle key={i} cx={x} cy={y} r="3" className="fill-white" />
-                                 );
-                             })}
-                         </svg>
                      </div>
                 </div>
 
@@ -84,7 +60,7 @@ export const HiLoView = React.memo<HiLoViewProps>(({ gameState, deck }) => {
                                 <div className="text-right opacity-80">
                                     <div className="text-[10px] text-gray-500 uppercase">LOWER</div>
                                     <div className="text-terminal-green font-bold text-sm">
-                                        {getHiLoMultiplier(projections.low)}
+                                        {nextGuessMultiplier('LOWER')}
                                     </div>
                                 </div>
 
@@ -94,7 +70,7 @@ export const HiLoView = React.memo<HiLoViewProps>(({ gameState, deck }) => {
                                 <div className="text-left opacity-80">
                                     <div className="text-[10px] text-gray-500 uppercase">HIGHER</div>
                                     <div className="text-terminal-green font-bold text-sm">
-                                        {getHiLoMultiplier(projections.high)}
+                                        {nextGuessMultiplier('HIGHER')}
                                     </div>
                                 </div>
                             </div>
@@ -118,7 +94,7 @@ export const HiLoView = React.memo<HiLoViewProps>(({ gameState, deck }) => {
             </div>
 
             {/* CONTROLS */}
-            <div className="absolute bottom-8 left-0 right-0 h-16 bg-terminal-black/90 border-t-2 border-gray-700 flex items-center justify-center gap-2 p-2 z-40">
+            <div className="absolute bottom-8 left-0 right-0 h-16 bg-terminal-black/90 border-t-2 border-gray-700 flex items-center justify-start md:justify-center gap-2 p-2 z-40 overflow-x-auto">
                 {(gameState.stage === 'BETTING' || gameState.stage === 'RESULT') ? (
                     <>
                          <div className="flex gap-2">

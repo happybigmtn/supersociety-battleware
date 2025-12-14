@@ -237,7 +237,10 @@ mod tests {
         // Bet 1x at river (deduct play bet)
         let mut rng = GameRng::new(&seed, session.id, 4);
         let result = process_game_move(&mut session, &[3], &mut rng);
-        assert!(matches!(result, Ok(GameResult::ContinueWithUpdate { payout: -100 })));
+        assert!(matches!(
+            result,
+            Ok(GameResult::ContinueWithUpdate { payout: -100 })
+        ));
 
         // Reveal to resolve
         let mut rng = GameRng::new(&seed, session.id, 5);
@@ -266,7 +269,10 @@ mod tests {
         // Play (deduct play bet)
         let mut rng = GameRng::new(&seed, session.id, 2);
         let result = process_game_move(&mut session, &[0], &mut rng);
-        assert!(matches!(result, Ok(GameResult::ContinueWithUpdate { payout: -100 })));
+        assert!(matches!(
+            result,
+            Ok(GameResult::ContinueWithUpdate { payout: -100 })
+        ));
 
         // Reveal to resolve
         let mut rng = GameRng::new(&seed, session.id, 3);

@@ -1,24 +1,13 @@
-use crate::{Client, Error, Result};
+use crate::{client::join_hex_path, Client, Error, Result};
 use commonware_codec::{DecodeExt, Encode};
 use commonware_consensus::Viewable;
 use nullspace_types::{api::Query, Seed, NAMESPACE};
-use url::Url;
-
-fn query_seed_path(base: &Url, query: &Query) -> String {
-    let query = query.encode();
-    base.join(&format!("seed/{}", commonware_utils::hex(&query)))
-        .unwrap()
-        .to_string()
-}
 
 impl Client {
     pub async fn query_seed(&self, query: Query) -> Result<Option<Seed>> {
         // Make request
-        let result = self
-            .http_client
-            .get(query_seed_path(&self.base_url, &query))
-            .send()
-            .await?;
+        let url = join_hex_path(&self.base_url, "seed", &query.encode())?;
+        let result = self.get_with_retry(url).await?;
 
         // Parse response
         match result.status() {

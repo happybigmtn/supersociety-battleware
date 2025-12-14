@@ -3,6 +3,7 @@ pub mod consensus;
 pub mod events;
 
 pub use client::Client;
+pub use client::RetryPolicy;
 pub use events::Stream;
 use thiserror::Error;
 
@@ -15,6 +16,8 @@ pub enum Error {
     Tungstenite(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("failed: {0}")]
     Failed(reqwest::StatusCode),
+    #[error("too many transactions in one submission: {got} (max {max})")]
+    TooManyTransactions { max: usize, got: usize },
     #[error("invalid data: {0}")]
     InvalidData(#[from] commonware_codec::Error),
     #[error("invalid signature")]
@@ -240,8 +243,10 @@ mod tests {
 
         // Submit to simulator
         let (state_digests, events_digests) = summary.verify(&network_identity).unwrap();
-        simulator.submit_events(summary.clone(), events_digests);
-        simulator.submit_state(summary, state_digests);
+        simulator
+            .submit_events(summary.clone(), events_digests)
+            .await;
+        simulator.submit_state(summary, state_digests).await;
 
         // Query for account state
         let account_key = Key::Account(public.clone());
@@ -249,7 +254,7 @@ mod tests {
 
         assert!(lookup.is_some());
         let lookup = lookup.unwrap();
-        assert!(lookup.verify(&network_identity));
+        lookup.verify(&network_identity).unwrap();
 
         // Verify account data
         let Variable::Update(_, Value::Account(account)) = lookup.operation else {
@@ -278,7 +283,7 @@ mod tests {
 
         // Test seed update
         let seed = ctx.create_seed(10);
-        simulator.submit_seed(seed.clone());
+        simulator.submit_seed(seed.clone()).await;
 
         let update = stream.next().await.unwrap().unwrap();
         match update {
@@ -315,13 +320,15 @@ mod tests {
 
         // Submit events to simulator
         let (_state_digests, events_digests) = summary.verify(&network_identity).unwrap();
-        simulator.submit_events(summary.clone(), events_digests);
+        simulator
+            .submit_events(summary.clone(), events_digests)
+            .await;
 
         // Receive event update from stream
         let update = stream.next().await.unwrap().unwrap();
         match update {
             Update::Events(event) => {
-                assert!(event.verify(&network_identity));
+                event.verify(&network_identity).unwrap();
                 assert_eq!(event.progress.height, 1);
                 assert_eq!(event.events_proof_ops, summary.events_proof_ops);
             }
@@ -363,7 +370,7 @@ mod tests {
 
         // Submit a seed
         let seed = ctx.create_seed(42);
-        ctx.simulator.submit_seed(seed);
+        ctx.simulator.submit_seed(seed).await;
 
         // Get current view
         let view = client.query_seed(Query::Latest).await.unwrap().unwrap();
@@ -377,7 +384,7 @@ mod tests {
 
         // Submit seed
         let seed = ctx.create_seed(15);
-        ctx.simulator.submit_seed(seed.clone());
+        ctx.simulator.submit_seed(seed.clone()).await;
 
         // Query existing seed
         let result = client.query_seed(Query::Index(15)).await.unwrap();

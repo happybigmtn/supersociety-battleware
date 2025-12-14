@@ -306,6 +306,18 @@ export class WasmWrapper {
     return tx.encode();
   }
 
+  // Create a casino toggle super transaction
+  createCasinoToggleSuperTransaction(nonce) {
+    if (!this.keypair) {
+      throw new Error('Keypair not initialized');
+    }
+    const tx = this.wasm.Transaction.casino_toggle_super(
+      this.keypair,
+      BigInt(nonce)
+    );
+    return tx.encode();
+  }
+
   // Create a casino register transaction
   createCasinoRegisterTransaction(nonce, name) {
     if (!this.keypair) {

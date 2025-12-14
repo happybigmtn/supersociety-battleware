@@ -506,8 +506,9 @@ impl CasinoGame for Roulette {
                                         if bet_wins(bet.bet_type, bet.number, result) {
                                             let multiplier =
                                                 payout_multiplier(bet.bet_type).saturating_add(1);
-                                            total_return = total_return
-                                                .saturating_add(bet.amount.saturating_mul(multiplier));
+                                            total_return = total_return.saturating_add(
+                                                bet.amount.saturating_mul(multiplier),
+                                            );
                                         }
                                     }
                                 }
@@ -516,11 +517,13 @@ impl CasinoGame for Roulette {
                                         if bet_wins(bet.bet_type, bet.number, result) {
                                             let multiplier =
                                                 payout_multiplier(bet.bet_type).saturating_add(1);
-                                            total_return = total_return
-                                                .saturating_add(bet.amount.saturating_mul(multiplier));
+                                            total_return = total_return.saturating_add(
+                                                bet.amount.saturating_mul(multiplier),
+                                            );
                                         } else if is_even_money_bet(bet.bet_type) {
                                             // Half-back on even-money bets.
-                                            total_return = total_return.saturating_add(bet.amount / 2);
+                                            total_return =
+                                                total_return.saturating_add(bet.amount / 2);
                                         }
                                     }
                                 }
@@ -539,7 +542,8 @@ impl CasinoGame for Roulette {
                                                     ret,
                                                 );
                                             }
-                                            state.pending_return = state.pending_return.saturating_add(ret);
+                                            state.pending_return =
+                                                state.pending_return.saturating_add(ret);
                                         } else if is_even_money_bet(bet.bet_type) {
                                             imprisoned.push(bet.clone());
                                         }
@@ -570,12 +574,11 @@ impl CasinoGame for Roulette {
 
                         if session.super_mode.is_active && total_return > 0 {
                             // In En Prison on a zero result, pending_return already includes the super multiplier (if any).
-                            if !(
-                                matches!(
-                                    state.zero_rule,
-                                    ZeroRule::EnPrison | ZeroRule::EnPrisonDouble
-                                ) && result == 0
-                            ) {
+                            if !(matches!(
+                                state.zero_rule,
+                                ZeroRule::EnPrison | ZeroRule::EnPrisonDouble
+                            ) && result == 0)
+                            {
                                 total_return = apply_super_multiplier_number(
                                     result,
                                     &session.super_mode.multipliers,
@@ -1036,17 +1039,21 @@ mod tests {
 
             // Set La Partage (1)
             let mut rng = GameRng::new(&seed, session_id, 1);
-            Roulette::process_move(&mut test_session, &[3, 1], &mut rng).expect("Failed to set rule");
+            Roulette::process_move(&mut test_session, &[3, 1], &mut rng)
+                .expect("Failed to set rule");
 
             // Place a red bet
             let mut rng = GameRng::new(&seed, session_id, 2);
             let payload = place_bet_payload(BetType::Red, 0, 100);
-            Roulette::process_move(&mut test_session, &payload, &mut rng).expect("Failed to place bet");
+            Roulette::process_move(&mut test_session, &payload, &mut rng)
+                .expect("Failed to place bet");
 
             // Spin
             let mut rng = GameRng::new(&seed, session_id, 3);
-            let res = Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
-            let state = RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
+            let res =
+                Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
+            let state =
+                RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
 
             if state.result == Some(0) {
                 assert!(matches!(res, GameResult::Win(50)));
@@ -1069,17 +1076,21 @@ mod tests {
 
             // Set En Prison (2)
             let mut rng = GameRng::new(&seed, session_id, 1);
-            Roulette::process_move(&mut test_session, &[3, 2], &mut rng).expect("Failed to set rule");
+            Roulette::process_move(&mut test_session, &[3, 2], &mut rng)
+                .expect("Failed to set rule");
 
             // Place a red bet
             let mut rng = GameRng::new(&seed, session_id, 2);
             let payload = place_bet_payload(BetType::Red, 0, 100);
-            Roulette::process_move(&mut test_session, &payload, &mut rng).expect("Failed to place bet");
+            Roulette::process_move(&mut test_session, &payload, &mut rng)
+                .expect("Failed to place bet");
 
             // First spin
             let mut rng = GameRng::new(&seed, session_id, 3);
-            let res1 = Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
-            let state1 = RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
+            let res1 =
+                Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
+            let state1 =
+                RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
 
             if state1.result != Some(0) {
                 continue;
@@ -1091,8 +1102,10 @@ mod tests {
 
             // Second spin
             let mut rng = GameRng::new(&seed, session_id, 4);
-            let res2 = Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
-            let state2 = RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
+            let res2 =
+                Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
+            let state2 =
+                RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
             let result2 = state2.result.expect("Second result should be set");
 
             assert!(test_session.is_complete);
@@ -1120,17 +1133,21 @@ mod tests {
 
             // Set En Prison (Double) (3)
             let mut rng = GameRng::new(&seed, session_id, 1);
-            Roulette::process_move(&mut test_session, &[3, 3], &mut rng).expect("Failed to set rule");
+            Roulette::process_move(&mut test_session, &[3, 3], &mut rng)
+                .expect("Failed to set rule");
 
             // Place a red bet
             let mut rng = GameRng::new(&seed, session_id, 2);
             let payload = place_bet_payload(BetType::Red, 0, 100);
-            Roulette::process_move(&mut test_session, &payload, &mut rng).expect("Failed to place bet");
+            Roulette::process_move(&mut test_session, &payload, &mut rng)
+                .expect("Failed to place bet");
 
             // First spin
             let mut rng = GameRng::new(&seed, session_id, 3);
-            let res1 = Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
-            let state1 = RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
+            let res1 =
+                Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
+            let state1 =
+                RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
 
             if state1.result != Some(0) {
                 continue;
@@ -1142,8 +1159,10 @@ mod tests {
 
             // Second spin (look for 0 again)
             let mut rng = GameRng::new(&seed, session_id, 4);
-            let res2 = Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
-            let state2 = RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
+            let res2 =
+                Roulette::process_move(&mut test_session, &[1], &mut rng).expect("Spin failed");
+            let state2 =
+                RouletteState::from_blob(&test_session.state_blob).expect("Failed to parse state");
 
             if state2.result != Some(0) {
                 continue;

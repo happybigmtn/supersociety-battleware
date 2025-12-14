@@ -1,6 +1,7 @@
 import { WasmWrapper } from './wasm.js';
 import { NonceManager } from './nonceManager.js';
 import { snakeToCamel } from '../utils/caseNormalizer.js';
+import { getUnlockedVault } from '../security/vaultRuntime';
 
 // Delay between fetch retries
 const FETCH_RETRY_DELAY_MS = 1000;
@@ -745,33 +746,61 @@ export class CasinoClient {
    *          In production, consider using more secure storage methods.
    */
   getOrCreateKeypair() {
-    // Security warning for development
-    if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-      console.warn('WARNING: Private keys are stored in localStorage. This is not secure for production use.');
+    const vaultEnabled =
+      typeof window !== 'undefined' && localStorage.getItem('nullspace_vault_enabled') === 'true';
+    const unlockedVault = (() => {
+      try {
+        return getUnlockedVault();
+      } catch {
+        return null;
+      }
+    })();
+
+    // If the user has enabled a passkey vault, require it to be unlocked for signing.
+    if (vaultEnabled && !unlockedVault) {
+      console.warn('[CasinoClient] Passkey vault enabled but locked. Unlock via /security.');
+      return null;
     }
 
-    // Check if we have a stored private key in localStorage
-    const storedPrivateKeyHex = localStorage.getItem('casino_private_key');
-
-    if (storedPrivateKeyHex) {
-      // Convert hex string back to bytes
-      const privateKeyBytes = new Uint8Array(storedPrivateKeyHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-      this.wasm.createKeypair(privateKeyBytes);
-      console.log('Loaded keypair from storage');
+    if (unlockedVault?.nullspaceEd25519PrivateKey) {
+      this.wasm.createKeypair(unlockedVault.nullspaceEd25519PrivateKey);
+      console.log('Loaded keypair from passkey vault');
     } else {
-      // Let WASM generate a new keypair using the browser's crypto API
-      this.wasm.createKeypair();
+      // Security warning for development (legacy mode)
+      if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
+        console.warn('WARNING: Private keys are stored in localStorage. This is not secure for production use.');
+      }
 
-      // Store the private key for persistence (Note: In production, consider more secure storage)
-      const privateKeyHex = this.wasm.getPrivateKeyHex();
-      localStorage.setItem('casino_private_key', privateKeyHex);
-      console.log('Generated new keypair using browser crypto API and saved to localStorage');
+      // Check if we have a stored private key in localStorage
+      const storedPrivateKeyHex = localStorage.getItem('casino_private_key');
+
+      if (storedPrivateKeyHex) {
+        // Convert hex string back to bytes
+        const privateKeyBytes = new Uint8Array(storedPrivateKeyHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+        this.wasm.createKeypair(privateKeyBytes);
+        console.log('Loaded keypair from storage');
+      } else {
+        // Let WASM generate a new keypair using the browser's crypto API
+        this.wasm.createKeypair();
+
+        // Store the private key for persistence (Note: In production, consider more secure storage)
+        const privateKeyHex = this.wasm.getPrivateKeyHex();
+        localStorage.setItem('casino_private_key', privateKeyHex);
+        console.log('Generated new keypair using browser crypto API and saved to localStorage');
+      }
     }
 
     const keypair = {
       publicKey: this.wasm.getPublicKeyBytes(),
       publicKeyHex: this.wasm.getPublicKeyHex()
     };
+
+    // Store non-secret identifier for the current keypair.
+    try {
+      localStorage.setItem('casino_public_key_hex', keypair.publicKeyHex);
+    } catch {
+      // ignore
+    }
 
     console.log('Using keypair with public key:', keypair.publicKeyHex);
 

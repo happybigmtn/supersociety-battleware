@@ -2,6 +2,8 @@
 import { useEffect, RefObject } from 'react';
 import { GameType, GameState } from '../types';
 
+const BET_AMOUNTS = [1, 5, 25, 100, 500, 1000, 5000, 10000, 50000];
+
 interface KeyboardControlsProps {
   gameState: GameState;
   uiState: { commandOpen: boolean; customBetOpen: boolean; helpOpen: boolean; searchQuery: string; numberInputString: string };
@@ -22,6 +24,7 @@ interface KeyboardControlsProps {
     deal: () => void;
     toggleShield: () => void;
     toggleDouble: () => void;
+    toggleSuper: () => void;
     bjHit: () => void;
     bjStand: () => void;
     bjDouble: () => void;
@@ -149,6 +152,22 @@ export const useKeyboardControls = ({
                 }
                 return;
             }
+
+            // Ctrl+1-9 for direct bet selection, Ctrl+0 for custom.
+            // Must run BEFORE game-specific numeric shortcuts (roulette dozens, video poker holds, etc).
+            if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+                const num = parseInt(e.key);
+                if (!isNaN(num)) {
+                    e.preventDefault();
+                    if (num === 0) {
+                        uiActions.setCustomBetOpen(true);
+                        setTimeout(() => inputRefs.customBet.current?.focus(), 10);
+                    } else if (num <= BET_AMOUNTS.length) {
+                        uiActions.setBetAmount(BET_AMOUNTS[num - 1]);
+                    }
+                    return;
+                }
+            }
             
             // Numeric Input (Roulette/SicBo)
             if (gameState.rouletteInputMode !== 'NONE' || gameState.sicBoInputMode === 'SUM') {
@@ -165,7 +184,13 @@ export const useKeyboardControls = ({
             // Game Actions
             if (e.key === ' ') { e.preventDefault(); gameActions.deal(); return; }
             if (e.key.toLowerCase() === 'z') gameActions.toggleShield();
-            if (e.key.toLowerCase() === 'x') gameActions.toggleDouble();
+            if (e.key.toLowerCase() === 'x') {
+                // In craps, `x` is reserved for NEXT bets; allow Shift+X for the double modifier.
+                if (gameState.type !== GameType.CRAPS || e.shiftKey) {
+                    gameActions.toggleDouble();
+                }
+            }
+            if (e.key.toLowerCase() === 'g') gameActions.toggleSuper();
 
             // Specific Game Keys - handle BEFORE bet amounts to allow number key overrides
             const k = e.key.toLowerCase();
@@ -182,7 +207,7 @@ export const useKeyboardControls = ({
                 if (k === 'n') gameActions.bjInsurance(false);
             } else if (gameState.type === GameType.VIDEO_POKER) {
                 if (k === 'd') gameActions.drawVideoPoker();
-                // 1-5 toggle hold on cards - takes priority over bet changes
+                // 1-5 toggle hold on cards (Ctrl+1-9 are reserved for bet sizing)
                 if (['1','2','3','4','5'].includes(e.key)) {
                     gameActions.toggleHold(parseInt(e.key)-1);
                     return;
@@ -206,6 +231,14 @@ export const useKeyboardControls = ({
                 if (k === 'b') gameActions.placeRouletteBet('BLACK');
                 if (k === 'e') gameActions.placeRouletteBet('EVEN');
                 if (k === 'o') gameActions.placeRouletteBet('ODD');
+                if (k === 'l') gameActions.placeRouletteBet('LOW');
+                if (k === 'h') gameActions.placeRouletteBet('HIGH');
+                if (e.key === '1') { gameActions.placeRouletteBet('DOZEN_1'); return; }
+                if (e.key === '2') { gameActions.placeRouletteBet('DOZEN_2'); return; }
+                if (e.key === '3') { gameActions.placeRouletteBet('DOZEN_3'); return; }
+                if (k === 'a') gameActions.placeRouletteBet('COL_1');
+                if (k === 'd') gameActions.placeRouletteBet('COL_2');
+                if (k === 'f') gameActions.placeRouletteBet('COL_3');
                 if (k === 'p') gameActions.cycleRouletteZeroRule();
                 if (k === 'n') {
                     uiActions.setNumberInputString("");
@@ -237,7 +270,7 @@ export const useKeyboardControls = ({
                     gameActions.setGameState((prev) => ({ ...prev, rouletteInputMode: 'SIX_LINE' }));
                     return;
                 }
-                // '0' places ZERO bet - takes priority over custom bet dialog
+                // Plain '0' places ZERO bet (Ctrl+0 opens custom bet dialog)
                 if (e.key === '0') {
                     gameActions.placeRouletteBet('ZERO');
                     return;
@@ -301,7 +334,7 @@ export const useKeyboardControls = ({
                 if (k === 't') gameActions.rebetCraps();
                 if (k === 'y') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'YES' }));
                 if (k === 'n') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'NO' }));
-                if (k === 'x') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'NEXT' }));
+                if (k === 'x' && !e.shiftKey) gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'NEXT' }));
                 if (k === 'h') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'HARDWAY' }));
                 if (k === 'i') gameActions.setGameState((prev) => ({ ...prev, crapsInputMode: 'BUY' }));
                 if (k === 's') gameActions.placeCrapsBet('ATS_SMALL');
@@ -396,6 +429,8 @@ export const useKeyboardControls = ({
 
                 if (k === 's') gameActions.placeSicBoBet('SMALL');
                 if (k === 'b') gameActions.placeSicBoBet('BIG');
+                if (k === 'o') gameActions.placeSicBoBet('ODD');
+                if (k === 'v') gameActions.placeSicBoBet('EVEN');
                 if (k === 'a') gameActions.placeSicBoBet('TRIPLE_ANY');
                 if (k === 'n') {
                     uiActions.setNumberInputString("");
@@ -441,41 +476,23 @@ export const useKeyboardControls = ({
                 if (k === 'u') gameActions.undoSicBoBet();
             }
 
-            // Bet Amounts (ArrowUp/ArrowDown to cycle, Ctrl+1-9, Ctrl+0 for custom)
-            const bets = [1, 5, 25, 100, 500, 1000, 5000, 10000, 50000];
-
-            // Arrow keys to cycle through bet amounts (only when not in input mode)
+            // Bet Amounts (ArrowUp/ArrowDown to cycle)
             if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !uiState.commandOpen && !uiState.customBetOpen) {
                 e.preventDefault();
                 const currentBet = gameState.bet || 50;
-                const currentIndex = bets.findIndex(b => b >= currentBet);
+                const currentIndex = BET_AMOUNTS.findIndex(b => b >= currentBet);
                 let newIndex: number;
 
                 if (e.key === 'ArrowUp') {
                     // Increase bet - go to next higher value or stay at max
-                    newIndex = currentIndex === -1 ? bets.length - 1 : Math.min(currentIndex + 1, bets.length - 1);
+                    newIndex = currentIndex === -1 ? BET_AMOUNTS.length - 1 : Math.min(currentIndex + 1, BET_AMOUNTS.length - 1);
                 } else {
                     // Decrease bet - go to next lower value or stay at min
                     newIndex = currentIndex <= 0 ? 0 : currentIndex - 1;
                 }
 
-                uiActions.setBetAmount(bets[newIndex]);
+                uiActions.setBetAmount(BET_AMOUNTS[newIndex]);
                 return;
-            }
-
-            // Ctrl+1-9 for direct bet selection, Ctrl+0 for custom
-            if (e.ctrlKey && !e.shiftKey && !e.altKey) {
-                const num = parseInt(e.key);
-                if (!isNaN(num)) {
-                    e.preventDefault(); // Prevent browser shortcuts like Ctrl+1 for tabs
-                    if (num === 0) {
-                        uiActions.setCustomBetOpen(true);
-                        setTimeout(() => inputRefs.customBet.current?.focus(), 10);
-                    } else if (num <= bets.length) {
-                        uiActions.setBetAmount(bets[num - 1]);
-                    }
-                    return;
-                }
             }
         };
 

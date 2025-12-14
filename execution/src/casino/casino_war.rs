@@ -197,11 +197,13 @@ impl CasinoGame for CasinoWar {
                         // We only support i64 deltas in ContinueWithUpdate.
                         let (payout, new_tie_bet) = if next_amount >= prev_amount {
                             let delta = next_amount - prev_amount;
-                            let delta_i64 = i64::try_from(delta).map_err(|_| GameError::InvalidPayload)?;
+                            let delta_i64 =
+                                i64::try_from(delta).map_err(|_| GameError::InvalidPayload)?;
                             (-(delta_i64), next_amount)
                         } else {
                             let delta = prev_amount - next_amount;
-                            let delta_i64 = i64::try_from(delta).map_err(|_| GameError::InvalidPayload)?;
+                            let delta_i64 =
+                                i64::try_from(delta).map_err(|_| GameError::InvalidPayload)?;
                             (delta_i64, next_amount)
                         };
 
@@ -223,7 +225,8 @@ impl CasinoGame for CasinoWar {
                         let dealer_rank = card_rank(dealer_card);
 
                         // Tie bet pays on initial tie only.
-                        let tie_bet_return: i64 = if state.tie_bet > 0 && player_rank == dealer_rank {
+                        let tie_bet_return: i64 = if state.tie_bet > 0 && player_rank == dealer_rank
+                        {
                             let credited = state
                                 .tie_bet
                                 .saturating_mul(TIE_BET_PAYOUT_TO_1.saturating_add(1));
@@ -298,8 +301,10 @@ impl CasinoGame for CasinoWar {
                             rng.draw_card(&mut deck);
                         }
 
-                        let new_player_card = rng.draw_card(&mut deck).ok_or(GameError::InvalidMove)?;
-                        let new_dealer_card = rng.draw_card(&mut deck).ok_or(GameError::InvalidMove)?;
+                        let new_player_card =
+                            rng.draw_card(&mut deck).ok_or(GameError::InvalidMove)?;
+                        let new_dealer_card =
+                            rng.draw_card(&mut deck).ok_or(GameError::InvalidMove)?;
 
                         let new_player_rank = card_rank(new_player_card);
                         let new_dealer_rank = card_rank(new_dealer_card);
@@ -317,10 +322,9 @@ impl CasinoGame for CasinoWar {
                             // Note: We model the raise as a contingent loss (`LossWithExtraDeduction`)
                             // instead of a pre-deducted bet, so we express the bonus via the credited return.
                             let base_winnings = if new_player_rank == new_dealer_rank {
-                                session
-                                    .bet
-                                    .saturating_mul(2)
-                                    .saturating_add(session.bet.saturating_mul(TIE_AFTER_TIE_BONUS_MULTIPLIER))
+                                session.bet.saturating_mul(2).saturating_add(
+                                    session.bet.saturating_mul(TIE_AFTER_TIE_BONUS_MULTIPLIER),
+                                )
                             } else {
                                 session.bet.saturating_mul(2)
                             };
@@ -384,8 +388,10 @@ impl CasinoGame for CasinoWar {
                         }
                         Move::War => {
                             let war_bet = session.bet;
-                            let mut deck =
-                                rng.create_shoe_excluding(&[player_card, dealer_card], CASINO_WAR_DECKS);
+                            let mut deck = rng.create_shoe_excluding(
+                                &[player_card, dealer_card],
+                                CASINO_WAR_DECKS,
+                            );
                             for _ in 0..3 {
                                 rng.draw_card(&mut deck);
                             }
@@ -397,8 +403,11 @@ impl CasinoGame for CasinoWar {
                             let new_player_rank = card_rank(new_player_card);
                             let new_dealer_rank = card_rank(new_dealer_card);
 
-                            session.state_blob =
-                                serialize_state_legacy(new_player_card, new_dealer_card, StageV0::War);
+                            session.state_blob = serialize_state_legacy(
+                                new_player_card,
+                                new_dealer_card,
+                                StageV0::War,
+                            );
                             session.is_complete = true;
 
                             if new_player_rank >= new_dealer_rank {
@@ -613,7 +622,10 @@ mod tests {
         payload.extend_from_slice(&10u64.to_be_bytes());
         let mut rng = GameRng::new(&seed, session.id, 1);
         let result = CasinoWar::process_move(&mut session, &payload, &mut rng);
-        assert!(matches!(result, Ok(GameResult::ContinueWithUpdate { payout: -10 })));
+        assert!(matches!(
+            result,
+            Ok(GameResult::ContinueWithUpdate { payout: -10 })
+        ));
 
         let parsed = parse_state(&session.state_blob).expect("Failed to parse state");
         let Ok(state) = parsed else {

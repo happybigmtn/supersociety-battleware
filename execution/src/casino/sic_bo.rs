@@ -19,7 +19,7 @@
 //! 4 = Specific triple (150:1) - number = 1-6
 //! 5 = Any triple (24:1)
 //! 6 = Specific double (8:1) - number = 1-6
-//! 7 = Total of N (various payouts) - number = 4-17
+//! 7 = Total of N (various payouts) - number = 3-18
 //! 8 = Single number appears (1:1 to 3:1) - number = 1-6
 //! 9 = Domino (two faces) (5:1) - number = (min<<4)|max, min/max in 1-6 and min<max
 //! 10 = Three-Number Easy Hop (30:1) - number = 6-bit mask of chosen numbers (exactly 3 bits set)
@@ -34,16 +34,16 @@ use nullspace_types::casino::GameSession;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BetType {
-    Small = 0,          // 4-10, loses on triple (1:1)
-    Big = 1,            // 11-17, loses on triple (1:1)
-    Odd = 2,            // Odd total (1:1)
-    Even = 3,           // Even total (1:1)
-    SpecificTriple = 4, // All three same specific (150:1)
-    AnyTriple = 5,      // Any triple (24:1)
-    SpecificDouble = 6, // At least two of specific (8:1)
-    Total = 7,          // Specific total (various)
-    Single = 8,         // Single number appears 1-3 times (1:1 to 3:1)
-    Domino = 9,         // Two-number combination (5:1)
+    Small = 0,               // 4-10, loses on triple (1:1)
+    Big = 1,                 // 11-17, loses on triple (1:1)
+    Odd = 2,                 // Odd total (1:1)
+    Even = 3,                // Even total (1:1)
+    SpecificTriple = 4,      // All three same specific (150:1)
+    AnyTriple = 5,           // Any triple (24:1)
+    SpecificDouble = 6,      // At least two of specific (8:1)
+    Total = 7,               // Specific total (various)
+    Single = 8,              // Single number appears 1-3 times (1:1 to 3:1)
+    Domino = 9,              // Two-number combination (5:1)
     ThreeNumberEasyHop = 10, // Three unique numbers (30:1)
     ThreeNumberHardHop = 11, // Two of one number + one of another (50:1)
     FourNumberEasyHop = 12,  // Three-of-four numbers (7:1)
@@ -173,6 +173,7 @@ impl SicBoState {
 /// Payout table for total bets.
 fn total_payout(total: u8) -> u64 {
     match total {
+        3 | 18 => 180,
         4 | 17 => 50,
         5 | 16 => 18,
         6 | 15 => 14,
@@ -384,7 +385,7 @@ impl CasinoGame for SicBo {
                         }
                     }
                     BetType::Total => {
-                        if number < 4 || number > 17 {
+                        if number < 3 || number > 18 {
                             return Err(GameError::InvalidPayload);
                         }
                     }
@@ -403,11 +404,7 @@ impl CasinoGame for SicBo {
                     BetType::ThreeNumberHardHop => {
                         let double = (number >> 4) & 0x0f;
                         let single = number & 0x0f;
-                        if double < 1
-                            || double > 6
-                            || single < 1
-                            || single > 6
-                            || double == single
+                        if double < 1 || double > 6 || single < 1 || single > 6 || double == single
                         {
                             return Err(GameError::InvalidPayload);
                         }
@@ -543,8 +540,10 @@ mod tests {
 
     #[test]
     fn test_total_payout() {
+        assert_eq!(total_payout(3), 180);
         assert_eq!(total_payout(4), 50);
         assert_eq!(total_payout(17), 50);
+        assert_eq!(total_payout(18), 180);
         assert_eq!(total_payout(5), 18);
         assert_eq!(total_payout(10), 6);
         assert_eq!(total_payout(11), 6);
@@ -713,8 +712,13 @@ mod tests {
         let result = SicBo::process_move(&mut session, &payload, &mut rng);
         assert!(matches!(result, Err(GameError::InvalidPayload)));
 
-        // Total bet with invalid number (3)
-        let payload = place_bet_payload(7, 3, 100);
+        // Total bet with invalid number (2)
+        let payload = place_bet_payload(7, 2, 100);
+        let result = SicBo::process_move(&mut session, &payload, &mut rng);
+        assert!(matches!(result, Err(GameError::InvalidPayload)));
+
+        // Total bet with invalid number (19)
+        let payload = place_bet_payload(7, 19, 100);
         let result = SicBo::process_move(&mut session, &payload, &mut rng);
         assert!(matches!(result, Err(GameError::InvalidPayload)));
 

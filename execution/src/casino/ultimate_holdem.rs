@@ -63,7 +63,7 @@
 
 use super::super_mode::apply_super_multiplier_cards;
 use super::{CasinoGame, GameError, GameResult, GameRng};
-use nullspace_types::casino::GameSession;
+use nullspace_types::casino::{GameSession, UTH_PROGRESSIVE_BASE_JACKPOT};
 
 const STATE_VERSION_V1: u8 = 1;
 const STATE_VERSION_V2: u8 = 2;
@@ -74,7 +74,6 @@ const STATE_LEN_V2: usize = 32;
 const STATE_LEN_V3: usize = 40;
 
 const PROGRESSIVE_BET_UNIT: u64 = 1;
-const UTH_PROGRESSIVE_JACKPOT: u64 = 10_000;
 
 /// Game stages.
 #[repr(u8)]
@@ -308,7 +307,11 @@ fn apply_progressive_update(state: &mut UthState, new_bet: u64) -> Result<i64, G
     Ok(-(delta as i64))
 }
 
-fn draw_into_unknowns(state: &mut UthState, rng: &mut GameRng, need_dealer: bool) -> Result<(), GameError> {
+fn draw_into_unknowns(
+    state: &mut UthState,
+    rng: &mut GameRng,
+    need_dealer: bool,
+) -> Result<(), GameError> {
     let used = known_cards_in_state(state);
     let mut deck = rng.create_deck_excluding(&used);
 
@@ -357,7 +360,11 @@ pub enum HandRank {
 /// Get card rank (1-13, but Ace = 14 for comparison).
 fn card_rank(card: u8) -> u8 {
     let r = (card % 13) + 1;
-    if r == 1 { 14 } else { r }
+    if r == 1 {
+        14
+    } else {
+        r
+    }
 }
 
 /// Get card suit.
@@ -440,8 +447,10 @@ fn evaluate_5_card_fast(cards: &[u8; 5]) -> (HandRank, [u8; 5]) {
     // Straight?
     let mut sorted = ranks;
     sorted.sort_unstable();
-    let has_duplicates =
-        sorted[0] == sorted[1] || sorted[1] == sorted[2] || sorted[2] == sorted[3] || sorted[3] == sorted[4];
+    let has_duplicates = sorted[0] == sorted[1]
+        || sorted[1] == sorted[2]
+        || sorted[2] == sorted[3]
+        || sorted[3] == sorted[4];
     let is_straight = if has_duplicates {
         false
     } else if sorted[4] - sorted[0] == 4 {
@@ -542,8 +551,10 @@ fn uth_progressive_return(hole: &[u8; 2], flop: &[u8; 3], progressive_bet: u64) 
     let cards = [hole[0], hole[1], flop[0], flop[1], flop[2]];
     let (rank, _kickers) = evaluate_5_card_fast(&cards);
     match rank {
-        HandRank::RoyalFlush => progressive_bet.saturating_mul(UTH_PROGRESSIVE_JACKPOT),
-        HandRank::StraightFlush => progressive_bet.saturating_mul(UTH_PROGRESSIVE_JACKPOT / 10),
+        HandRank::RoyalFlush => progressive_bet.saturating_mul(UTH_PROGRESSIVE_BASE_JACKPOT),
+        HandRank::StraightFlush => {
+            progressive_bet.saturating_mul(UTH_PROGRESSIVE_BASE_JACKPOT / 10)
+        }
         HandRank::FourOfAKind => progressive_bet.saturating_mul(300),
         HandRank::FullHouse => progressive_bet.saturating_mul(50),
         HandRank::Flush => progressive_bet.saturating_mul(40),
@@ -553,7 +564,10 @@ fn uth_progressive_return(hole: &[u8; 2], flop: &[u8; 3], progressive_bet: u64) 
     }
 }
 
-fn resolve_showdown(session: &mut GameSession, state: &mut UthState) -> Result<GameResult, GameError> {
+fn resolve_showdown(
+    session: &mut GameSession,
+    state: &mut UthState,
+) -> Result<GameResult, GameError> {
     // Validate required cards
     if !state.player.iter().all(|&c| is_known_card(c)) {
         return Err(GameError::InvalidState);
@@ -613,14 +627,19 @@ fn resolve_showdown(session: &mut GameSession, state: &mut UthState) -> Result<G
     // Progressive side bet (independent of dealer; based on hole + flop only).
     if progressive_bet > 0 {
         let flop = [state.community[0], state.community[1], state.community[2]];
-        total_return = total_return.saturating_add(uth_progressive_return(&state.player, &flop, progressive_bet));
+        total_return = total_return.saturating_add(uth_progressive_return(
+            &state.player,
+            &flop,
+            progressive_bet,
+        ));
     }
 
     // Trips side bet (independent of dealer).
     if trips_bet > 0 {
         let mult = trips_multiplier(player_hand.0);
         if mult > 0 {
-            total_return = total_return.saturating_add(trips_bet.saturating_mul(mult.saturating_add(1)));
+            total_return =
+                total_return.saturating_add(trips_bet.saturating_mul(mult.saturating_add(1)));
         }
     }
 
@@ -637,8 +656,8 @@ fn resolve_showdown(session: &mut GameSession, state: &mut UthState) -> Result<G
         let rank = evaluate_best_6_card_bonus(&cards);
         let mult = six_card_bonus_multiplier(rank);
         if mult > 0 {
-            total_return =
-                total_return.saturating_add(six_card_bonus_bet.saturating_mul(mult.saturating_add(1)));
+            total_return = total_return
+                .saturating_add(six_card_bonus_bet.saturating_mul(mult.saturating_add(1)));
         }
     }
 
@@ -676,7 +695,11 @@ fn resolve_showdown(session: &mut GameSession, state: &mut UthState) -> Result<G
 
     // Apply super mode multiplier (if any) to the full credited return.
     if session.super_mode.is_active && total_return > 0 {
-        total_return = apply_super_multiplier_cards(&player_cards, &session.super_mode.multipliers, total_return);
+        total_return = apply_super_multiplier_cards(
+            &player_cards,
+            &session.super_mode.multipliers,
+            total_return,
+        );
     }
 
     state.stage = Stage::Showdown;
@@ -738,7 +761,9 @@ impl CasinoGame for UltimateHoldem {
                     Ok(if payout_update == 0 {
                         GameResult::Continue
                     } else {
-                        GameResult::ContinueWithUpdate { payout: payout_update }
+                        GameResult::ContinueWithUpdate {
+                            payout: payout_update,
+                        }
                     })
                 }
                 Action::SetSixCardBonus => {
@@ -748,7 +773,9 @@ impl CasinoGame for UltimateHoldem {
                     Ok(if payout_update == 0 {
                         GameResult::Continue
                     } else {
-                        GameResult::ContinueWithUpdate { payout: payout_update }
+                        GameResult::ContinueWithUpdate {
+                            payout: payout_update,
+                        }
                     })
                 }
                 Action::SetProgressive => {
@@ -761,7 +788,9 @@ impl CasinoGame for UltimateHoldem {
                     Ok(if payout_update == 0 {
                         GameResult::Continue
                     } else {
-                        GameResult::ContinueWithUpdate { payout: payout_update }
+                        GameResult::ContinueWithUpdate {
+                            payout: payout_update,
+                        }
                     })
                 }
                 Action::Deal => {
@@ -786,7 +815,9 @@ impl CasinoGame for UltimateHoldem {
                     Ok(if payout_update == 0 {
                         GameResult::Continue
                     } else {
-                        GameResult::ContinueWithUpdate { payout: payout_update }
+                        GameResult::ContinueWithUpdate {
+                            payout: payout_update,
+                        }
                     })
                 }
                 _ => Err(GameError::InvalidMove),
@@ -798,7 +829,8 @@ impl CasinoGame for UltimateHoldem {
                     let mut deck = rng.create_deck_excluding(&used);
                     for i in 0..3 {
                         if !is_known_card(state.community[i]) {
-                            state.community[i] = rng.draw_card(&mut deck).ok_or(GameError::DeckExhausted)?;
+                            state.community[i] =
+                                rng.draw_card(&mut deck).ok_or(GameError::DeckExhausted)?;
                         }
                     }
                     state.stage = Stage::Flop;
@@ -838,7 +870,8 @@ impl CasinoGame for UltimateHoldem {
                     let mut deck = rng.create_deck_excluding(&used);
                     for i in 3..5 {
                         if !is_known_card(state.community[i]) {
-                            state.community[i] = rng.draw_card(&mut deck).ok_or(GameError::DeckExhausted)?;
+                            state.community[i] =
+                                rng.draw_card(&mut deck).ok_or(GameError::DeckExhausted)?;
                         }
                     }
                     state.stage = Stage::River;
@@ -935,7 +968,10 @@ mod tests {
         let mut rng = GameRng::new(&seed, session.id, 0);
 
         let result = UltimateHoldem::init(&mut session, &mut rng);
-        assert!(matches!(result, GameResult::ContinueWithUpdate { payout: -100 }));
+        assert!(matches!(
+            result,
+            GameResult::ContinueWithUpdate { payout: -100 }
+        ));
 
         let state = parse_state(&session.state_blob).expect("Failed to parse state");
         assert_eq!(state.stage, Stage::Betting);
@@ -955,11 +991,15 @@ mod tests {
         payload.extend_from_slice(&25u64.to_be_bytes());
         let mut rng = GameRng::new(&seed, session.id, 1);
         let res = UltimateHoldem::process_move(&mut session, &payload, &mut rng).unwrap();
-        assert!(matches!(res, GameResult::ContinueWithUpdate { payout: -25 }));
+        assert!(matches!(
+            res,
+            GameResult::ContinueWithUpdate { payout: -25 }
+        ));
 
         // Deal
         let mut rng = GameRng::new(&seed, session.id, 2);
-        let res = UltimateHoldem::process_move(&mut session, &[Action::Deal as u8], &mut rng).unwrap();
+        let res =
+            UltimateHoldem::process_move(&mut session, &[Action::Deal as u8], &mut rng).unwrap();
         assert!(matches!(res, GameResult::Continue));
 
         let state = parse_state(&session.state_blob).expect("Failed to parse state");
@@ -981,7 +1021,10 @@ mod tests {
         payload.extend_from_slice(&25u64.to_be_bytes());
         let mut rng = GameRng::new(&seed, session.id, 1);
         let res = UltimateHoldem::process_move(&mut session, &payload, &mut rng).unwrap();
-        assert!(matches!(res, GameResult::ContinueWithUpdate { payout: -25 }));
+        assert!(matches!(
+            res,
+            GameResult::ContinueWithUpdate { payout: -25 }
+        ));
 
         // Set Trips back to 0 (refund)
         let mut payload = vec![Action::SetTrips as u8];
@@ -1008,7 +1051,10 @@ mod tests {
         payload.extend_from_slice(&25u64.to_be_bytes());
         let mut rng = GameRng::new(&seed, session.id, 1);
         let res = UltimateHoldem::process_move(&mut session, &payload, &mut rng).unwrap();
-        assert!(matches!(res, GameResult::ContinueWithUpdate { payout: -25 }));
+        assert!(matches!(
+            res,
+            GameResult::ContinueWithUpdate { payout: -25 }
+        ));
 
         // Deal
         let mut rng = GameRng::new(&seed, session.id, 2);
@@ -1042,13 +1088,21 @@ mod tests {
 
         // Bet 4x (deduct play bet)
         let mut rng = GameRng::new(&seed, session.id, 2);
-        let res = UltimateHoldem::process_move(&mut session, &[Action::Bet4x as u8], &mut rng).unwrap();
-        assert!(matches!(res, GameResult::ContinueWithUpdate { payout: -400 }));
+        let res =
+            UltimateHoldem::process_move(&mut session, &[Action::Bet4x as u8], &mut rng).unwrap();
+        assert!(matches!(
+            res,
+            GameResult::ContinueWithUpdate { payout: -400 }
+        ));
 
         // Reveal resolves
         let mut rng = GameRng::new(&seed, session.id, 3);
-        let res = UltimateHoldem::process_move(&mut session, &[Action::Reveal as u8], &mut rng).unwrap();
-        assert!(matches!(res, GameResult::Win(_) | GameResult::LossPreDeducted(_)));
+        let res =
+            UltimateHoldem::process_move(&mut session, &[Action::Reveal as u8], &mut rng).unwrap();
+        assert!(matches!(
+            res,
+            GameResult::Win(_) | GameResult::LossPreDeducted(_)
+        ));
         assert!(session.is_complete);
     }
 
@@ -1067,13 +1121,21 @@ mod tests {
 
         // Bet 3x (deduct play bet)
         let mut rng = GameRng::new(&seed, session.id, 2);
-        let res = UltimateHoldem::process_move(&mut session, &[Action::Bet3x as u8], &mut rng).unwrap();
-        assert!(matches!(res, GameResult::ContinueWithUpdate { payout: -300 }));
+        let res =
+            UltimateHoldem::process_move(&mut session, &[Action::Bet3x as u8], &mut rng).unwrap();
+        assert!(matches!(
+            res,
+            GameResult::ContinueWithUpdate { payout: -300 }
+        ));
 
         // Reveal resolves
         let mut rng = GameRng::new(&seed, session.id, 3);
-        let res = UltimateHoldem::process_move(&mut session, &[Action::Reveal as u8], &mut rng).unwrap();
-        assert!(matches!(res, GameResult::Win(_) | GameResult::LossPreDeducted(_)));
+        let res =
+            UltimateHoldem::process_move(&mut session, &[Action::Reveal as u8], &mut rng).unwrap();
+        assert!(matches!(
+            res,
+            GameResult::Win(_) | GameResult::LossPreDeducted(_)
+        ));
         assert!(session.is_complete);
     }
 
@@ -1100,8 +1162,12 @@ mod tests {
 
         // Fold
         let mut rng = GameRng::new(&seed, session.id, 4);
-        let res = UltimateHoldem::process_move(&mut session, &[Action::Fold as u8], &mut rng).unwrap();
-        assert!(matches!(res, GameResult::Win(_) | GameResult::LossPreDeducted(_)));
+        let res =
+            UltimateHoldem::process_move(&mut session, &[Action::Fold as u8], &mut rng).unwrap();
+        assert!(matches!(
+            res,
+            GameResult::Win(_) | GameResult::LossPreDeducted(_)
+        ));
         assert!(session.is_complete);
     }
 
@@ -1110,11 +1176,17 @@ mod tests {
         // Royal flush: 10♠ J♠ (hole) + Q♠ K♠ A♠ (flop).
         let hole = [9u8, 10u8];
         let flop = [11u8, 12u8, 0u8];
-        assert_eq!(uth_progressive_return(&hole, &flop, PROGRESSIVE_BET_UNIT), UTH_PROGRESSIVE_JACKPOT);
+        assert_eq!(
+            uth_progressive_return(&hole, &flop, PROGRESSIVE_BET_UNIT),
+            UTH_PROGRESSIVE_BASE_JACKPOT
+        );
 
         // Quads: A♠ A♥ (hole) + A♦ A♣ 2♠ (flop).
         let hole = [0u8, 13u8];
         let flop = [26u8, 39u8, 1u8];
-        assert_eq!(uth_progressive_return(&hole, &flop, PROGRESSIVE_BET_UNIT), 300);
+        assert_eq!(
+            uth_progressive_return(&hole, &flop, PROGRESSIVE_BET_UNIT),
+            300
+        );
     }
 }

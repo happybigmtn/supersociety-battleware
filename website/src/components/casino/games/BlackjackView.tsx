@@ -4,7 +4,7 @@ import { GameState } from '../../../types';
 import { Hand } from '../GameComponents';
 import { getVisibleHandValue } from '../../../utils/gameUtils';
 
-export const BlackjackView = React.memo<{ gameState: GameState }>(({ gameState }) => {
+export const BlackjackView = React.memo<{ gameState: GameState; actions: any }>(({ gameState, actions }) => {
     const dealerValue = useMemo(() => getVisibleHandValue(gameState.dealerCards), [gameState.dealerCards]);
     const playerValue = useMemo(() => getVisibleHandValue(gameState.playerCards), [gameState.playerCards]);
     return (
@@ -39,7 +39,7 @@ export const BlackjackView = React.memo<{ gameState: GameState }>(({ gameState }
                 {/* Player Area - Highlighted */}
                 <div className="min-h-[120px] flex gap-8 items-center justify-center">
                     {/* Finished Split Hands */}
-                    {gameState.completedHands.length > 0 && gameState.stage !== 'RESULT' && (
+                    {gameState.completedHands.length > 0 && (
                             <div className="flex gap-2 opacity-50 scale-75 origin-right">
                             {gameState.completedHands.map((h, i) => <Hand key={i} cards={h.cards} title={`HAND ${i+1}`} forcedColor="text-terminal-green" />)}
                             </div>
@@ -71,43 +71,108 @@ export const BlackjackView = React.memo<{ gameState: GameState }>(({ gameState }
             </div>
 
             {/* CONTROLS */}
-            <div className="absolute bottom-8 left-0 right-0 h-16 bg-terminal-black/90 border-t-2 border-gray-700 flex items-center justify-center gap-2 p-2 z-40">
+            <div className="absolute bottom-8 left-0 right-0 h-16 bg-terminal-black/90 border-t-2 border-gray-700 flex items-center justify-start md:justify-center gap-2 p-2 z-40 overflow-x-auto">
                     {(gameState.stage === 'BETTING' || gameState.stage === 'RESULT') ? (
                         <>
+                             {gameState.stage === 'BETTING' && (
+                                 <>
+	                                     <button
+	                                         type="button"
+	                                         onClick={actions?.bjToggle21Plus3}
+	                                         className={`flex flex-col items-center border rounded bg-black/50 px-3 py-1 ${
+	                                             (gameState.blackjack21Plus3Bet || 0) > 0
+	                                                 ? 'border-terminal-green bg-terminal-green/10 text-terminal-green'
+	                                                 : 'border-gray-700 text-gray-500'
+	                                         }`}
+	                                     >
+                                         <span className="font-bold text-sm">J</span>
+                                         <span className="text-[10px]">21+3</span>
+                                     </button>
+                                     <div className="w-px h-8 bg-gray-800 mx-2"></div>
+                                 </>
+                             )}
                              <div className="flex gap-2">
-                                 <div className={`flex flex-col items-center border rounded bg-black/50 px-3 py-1 ${gameState.activeModifiers.shield ? 'border-cyan-400 text-cyan-400' : 'border-gray-700 text-gray-500'}`}>
+                                 <button
+                                     type="button"
+                                     onClick={actions?.toggleShield}
+                                     className={`flex flex-col items-center border rounded bg-black/50 px-3 py-1 ${
+                                         gameState.activeModifiers.shield
+                                             ? 'border-cyan-400 text-cyan-400'
+                                             : 'border-gray-700 text-gray-500'
+                                     }`}
+                                 >
                                     <span className="font-bold text-sm">Z</span>
                                     <span className="text-[10px]">SHIELD</span>
-                                </div>
-                                 <div className={`flex flex-col items-center border rounded bg-black/50 px-3 py-1 ${gameState.activeModifiers.double ? 'border-purple-400 text-purple-400' : 'border-gray-700 text-gray-500'}`}>
+                                 </button>
+                                 <button
+                                     type="button"
+                                     onClick={actions?.toggleDouble}
+                                     className={`flex flex-col items-center border rounded bg-black/50 px-3 py-1 ${
+                                         gameState.activeModifiers.double
+                                             ? 'border-purple-400 text-purple-400'
+                                             : 'border-gray-700 text-gray-500'
+                                     }`}
+                                 >
                                     <span className="font-bold text-sm">X</span>
                                     <span className="text-[10px]">DOUBLE</span>
-                                </div>
+                                 </button>
+                                 <button
+                                     type="button"
+                                     onClick={actions?.toggleSuper}
+                                     className={`flex flex-col items-center border rounded bg-black/50 px-3 py-1 ${
+                                         gameState.activeModifiers.super
+                                             ? 'border-terminal-gold text-terminal-gold'
+                                             : 'border-gray-700 text-gray-500'
+                                     }`}
+                                 >
+                                    <span className="font-bold text-sm">G</span>
+                                    <span className="text-[10px]">SUPER</span>
+                                 </button>
                             </div>
                             <div className="w-px h-8 bg-gray-800 mx-2"></div>
-                            <div className="flex flex-col items-center border border-terminal-green/50 rounded bg-black/50 px-3 py-1 w-24">
+                            <button
+                                type="button"
+                                onClick={actions?.deal}
+                                className="flex flex-col items-center border border-terminal-green/50 rounded bg-black/50 px-3 py-1 w-24"
+                            >
                                 <span className="text-terminal-green font-bold text-sm">SPACE</span>
                                 <span className="text-[10px] text-gray-500">DEAL</span>
-                            </div>
+                            </button>
                         </>
                     ) : (
                         <div className="flex gap-2">
-                            <div className="flex flex-col items-center border border-terminal-green/50 rounded bg-black/50 px-3 py-1">
+                            <button
+                                type="button"
+                                onClick={actions?.bjHit}
+                                className="flex flex-col items-center border border-terminal-green/50 rounded bg-black/50 px-3 py-1"
+                            >
                                 <span className="text-terminal-green font-bold text-sm">H</span>
                                 <span className="text-[10px] text-gray-500">HIT</span>
-                            </div>
-                            <div className="flex flex-col items-center border border-terminal-accent/50 rounded bg-black/50 px-3 py-1">
+                            </button>
+                            <button
+                                type="button"
+                                onClick={actions?.bjStand}
+                                className="flex flex-col items-center border border-terminal-accent/50 rounded bg-black/50 px-3 py-1"
+                            >
                                 <span className="text-terminal-accent font-bold text-sm">S</span>
                                 <span className="text-[10px] text-gray-500">STAND</span>
-                            </div>
-                            <div className="flex flex-col items-center border border-terminal-gold/50 rounded bg-black/50 px-3 py-1">
+                            </button>
+                            <button
+                                type="button"
+                                onClick={actions?.bjDouble}
+                                className="flex flex-col items-center border border-terminal-gold/50 rounded bg-black/50 px-3 py-1"
+                            >
                                 <span className="text-terminal-gold font-bold text-sm">D</span>
                                 <span className="text-[10px] text-gray-500">DOUBLE</span>
-                            </div>
-                            <div className="flex flex-col items-center border border-terminal-dim rounded bg-black/50 px-3 py-1">
+                            </button>
+                            <button
+                                type="button"
+                                onClick={actions?.bjSplit}
+                                className="flex flex-col items-center border border-terminal-dim rounded bg-black/50 px-3 py-1"
+                            >
                                 <span className="text-white font-bold text-sm">P</span>
                                 <span className="text-[10px] text-gray-500">SPLIT</span>
-                            </div>
+                            </button>
                         </div>
                     )}
             </div>

@@ -52,7 +52,7 @@
 
 use super::super_mode::apply_super_multiplier_cards;
 use super::{CasinoGame, GameError, GameResult, GameRng};
-use nullspace_types::casino::GameSession;
+use nullspace_types::casino::{GameSession, THREE_CARD_PROGRESSIVE_BASE_JACKPOT};
 
 const STATE_VERSION_V1: u8 = 1;
 const STATE_VERSION_V2: u8 = 2;
@@ -63,7 +63,6 @@ const STATE_LEN_V2: usize = 24;
 const STATE_LEN_V3: usize = 32;
 
 const PROGRESSIVE_BET_UNIT: u64 = 1;
-const THREE_CARD_PROGRESSIVE_JACKPOT: u64 = 10_000;
 
 /// Three Card Poker stages.
 #[repr(u8)]
@@ -133,7 +132,11 @@ pub enum HandRank {
 /// Get card rank (2-14, Ace = 14 for comparison).
 fn card_rank(card: u8) -> u8 {
     let r = (card % 13) + 1;
-    if r == 1 { 14 } else { r }
+    if r == 1 {
+        14
+    } else {
+        r
+    }
 }
 
 /// Get card suit.
@@ -378,8 +381,10 @@ fn evaluate_5_card_bonus_rank(cards: &[u8; 5]) -> SixCardBonusRank {
 
     let mut sorted = ranks;
     sorted.sort_unstable();
-    let has_duplicates =
-        sorted[0] == sorted[1] || sorted[1] == sorted[2] || sorted[2] == sorted[3] || sorted[3] == sorted[4];
+    let has_duplicates = sorted[0] == sorted[1]
+        || sorted[1] == sorted[2]
+        || sorted[2] == sorted[3]
+        || sorted[3] == sorted[4];
     let is_straight = if has_duplicates {
         false
     } else if sorted[4] - sorted[0] == 4 {
@@ -493,7 +498,7 @@ fn resolve_progressive_return(player_cards: &[u8; 3], progressive_bet: u64) -> u
             if player_hand.1 == [14, 13, 12] {
                 let is_spades = player_cards.iter().all(|&c| card_suit(c) == 0);
                 if is_spades {
-                    progressive_bet.saturating_mul(THREE_CARD_PROGRESSIVE_JACKPOT)
+                    progressive_bet.saturating_mul(THREE_CARD_PROGRESSIVE_BASE_JACKPOT)
                 } else {
                     progressive_bet.saturating_mul(500)
                 }
@@ -574,7 +579,9 @@ impl CasinoGame for ThreeCardPoker {
                     Ok(if payout_update == 0 {
                         GameResult::Continue
                     } else {
-                        GameResult::ContinueWithUpdate { payout: payout_update }
+                        GameResult::ContinueWithUpdate {
+                            payout: payout_update,
+                        }
                     })
                 }
                 Move::SetSixCardBonus => {
@@ -614,10 +621,15 @@ impl CasinoGame for ThreeCardPoker {
                     state.stage = Stage::Complete;
                     session.is_complete = true;
 
-                    let pairplus_return = resolve_pairplus_return(&state.player, state.pairplus_bet);
-                    let six_card_return =
-                        resolve_six_card_bonus_return(&state.player, &state.dealer, state.six_card_bonus_bet);
-                    let progressive_return = resolve_progressive_return(&state.player, state.progressive_bet);
+                    let pairplus_return =
+                        resolve_pairplus_return(&state.player, state.pairplus_bet);
+                    let six_card_return = resolve_six_card_bonus_return(
+                        &state.player,
+                        &state.dealer,
+                        state.six_card_bonus_bet,
+                    );
+                    let progressive_return =
+                        resolve_progressive_return(&state.player, state.progressive_bet);
                     let mut total_return = pairplus_return
                         .saturating_add(six_card_return)
                         .saturating_add(progressive_return);
@@ -669,10 +681,15 @@ impl CasinoGame for ThreeCardPoker {
                     let dealer_hand = evaluate_hand(&state.dealer);
                     let dealer_ok = dealer_qualifies(&dealer_hand);
 
-                    let pairplus_return = resolve_pairplus_return(&state.player, state.pairplus_bet);
-                    let six_card_return =
-                        resolve_six_card_bonus_return(&state.player, &state.dealer, state.six_card_bonus_bet);
-                    let progressive_return = resolve_progressive_return(&state.player, state.progressive_bet);
+                    let pairplus_return =
+                        resolve_pairplus_return(&state.player, state.pairplus_bet);
+                    let six_card_return = resolve_six_card_bonus_return(
+                        &state.player,
+                        &state.dealer,
+                        state.six_card_bonus_bet,
+                    );
+                    let progressive_return =
+                        resolve_progressive_return(&state.player, state.progressive_bet);
 
                     // Ante bonus is paid when the player plays, regardless of dealer qualification/outcome.
                     let ante_bonus = session
@@ -802,13 +819,21 @@ mod tests {
 
         // Play (deduct play bet)
         let mut rng = GameRng::new(&seed, session.id, 2);
-        let res = ThreeCardPoker::process_move(&mut session, &[Move::Play as u8], &mut rng).unwrap();
-        assert!(matches!(res, GameResult::ContinueWithUpdate { payout: -100 }));
+        let res =
+            ThreeCardPoker::process_move(&mut session, &[Move::Play as u8], &mut rng).unwrap();
+        assert!(matches!(
+            res,
+            GameResult::ContinueWithUpdate { payout: -100 }
+        ));
 
         // Reveal resolves
         let mut rng = GameRng::new(&seed, session.id, 3);
-        let res = ThreeCardPoker::process_move(&mut session, &[Move::Reveal as u8], &mut rng).unwrap();
-        assert!(matches!(res, GameResult::Win(_) | GameResult::LossPreDeducted(_)));
+        let res =
+            ThreeCardPoker::process_move(&mut session, &[Move::Reveal as u8], &mut rng).unwrap();
+        assert!(matches!(
+            res,
+            GameResult::Win(_) | GameResult::LossPreDeducted(_)
+        ));
         assert!(session.is_complete);
     }
 
@@ -820,7 +845,10 @@ mod tests {
             evaluate_best_5_of_6_bonus_rank(&cards),
             SixCardBonusRank::RoyalFlush
         );
-        assert_eq!(six_card_bonus_multiplier(SixCardBonusRank::RoyalFlush), 1000);
+        assert_eq!(
+            six_card_bonus_multiplier(SixCardBonusRank::RoyalFlush),
+            1000
+        );
 
         // Quads (four aces) + junk.
         let cards = [0u8, 13u8, 26u8, 39u8, 1u8, 2u8]; // A♠ A♥ A♦ A♣ 2♠ 3♠
@@ -828,7 +856,10 @@ mod tests {
             evaluate_best_5_of_6_bonus_rank(&cards),
             SixCardBonusRank::FourOfAKind
         );
-        assert_eq!(six_card_bonus_multiplier(SixCardBonusRank::FourOfAKind), 100);
+        assert_eq!(
+            six_card_bonus_multiplier(SixCardBonusRank::FourOfAKind),
+            100
+        );
     }
 
     #[test]
@@ -837,20 +868,29 @@ mod tests {
         let player = [0u8, 12u8, 11u8];
         assert_eq!(
             resolve_progressive_return(&player, PROGRESSIVE_BET_UNIT),
-            THREE_CARD_PROGRESSIVE_JACKPOT
+            THREE_CARD_PROGRESSIVE_BASE_JACKPOT
         );
 
         // Mini-royal in hearts: A♥ K♥ Q♥.
         let player = [13u8, 25u8, 24u8];
-        assert_eq!(resolve_progressive_return(&player, PROGRESSIVE_BET_UNIT), 500);
+        assert_eq!(
+            resolve_progressive_return(&player, PROGRESSIVE_BET_UNIT),
+            500
+        );
 
         // Straight flush: 2♠ 3♠ 4♠.
         let player = [1u8, 2u8, 3u8];
-        assert_eq!(resolve_progressive_return(&player, PROGRESSIVE_BET_UNIT), 70);
+        assert_eq!(
+            resolve_progressive_return(&player, PROGRESSIVE_BET_UNIT),
+            70
+        );
 
         // Trips: 5♠ 5♥ 5♦.
         let player = [4u8, 17u8, 30u8];
-        assert_eq!(resolve_progressive_return(&player, PROGRESSIVE_BET_UNIT), 60);
+        assert_eq!(
+            resolve_progressive_return(&player, PROGRESSIVE_BET_UNIT),
+            60
+        );
 
         // Straight: 2♠ 3♥ 4♦.
         let player = [1u8, 15u8, 29u8];

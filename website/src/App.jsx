@@ -3,6 +3,7 @@ import CasinoApp from './CasinoApp';
 import EconomyDashboard from './components/EconomyDashboard';
 import LiquidityApp from './LiquidityApp';
 import StakingApp from './StakingApp';
+import SecurityApp from './SecurityApp';
 import ExplorerLayout from './explorer/ExplorerLayout';
 import BlocksPage from './explorer/BlocksPage';
 import BlockDetailPage from './explorer/BlockDetailPage';
@@ -18,6 +19,7 @@ function App() {
         <Route path="/economy" element={<EconomyDashboard />} />
         <Route path="/swap" element={<LiquidityApp />} />
         <Route path="/stake" element={<StakingApp />} />
+        <Route path="/security" element={<SecurityApp />} />
         <Route path="/liquidity" element={<Navigate to="/swap" replace />} />
         <Route path="/explorer" element={<ExplorerLayout />}>
           <Route index element={<BlocksPage />} />

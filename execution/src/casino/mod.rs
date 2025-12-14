@@ -92,7 +92,7 @@ impl GameRng {
 
     /// Get a random f32 value in range [0.0, 1.0).
     pub fn next_f32(&mut self) -> f32 {
-        (self.next_u8() as f32) / 256.0
+        f32::from(self.next_u8()) / 256.0
     }
 
     /// Get a random value in range [0, max).
@@ -252,6 +252,29 @@ impl GameRng {
     }
 }
 
+impl rand::RngCore for GameRng {
+    fn next_u32(&mut self) -> u32 {
+        GameRng::next_u32(self)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let hi = u64::from(GameRng::next_u32(self));
+        let lo = u64::from(GameRng::next_u32(self));
+        (hi << 32) | lo
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        for byte in dest {
+            *byte = self.next_byte();
+        }
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
 /// Result of processing a game move.
 pub enum GameResult {
     /// Game is still in progress, state updated.
@@ -261,6 +284,11 @@ pub enum GameResult {
     ContinueWithUpdate { payout: i64 },
     /// Game completed with a win. Value is chips won (TOTAL RETURN: stake + profit).
     Win(u64),
+    /// Game completed with a win, but requires an additional deduction beyond any previously
+    /// charged wagers (e.g. a mid-game bet increase that ends the game immediately).
+    /// `payout` is the credited return (stake + profit) and `extra_deduction` is the amount to
+    /// deduct from the player's balance.
+    WinWithExtraDeduction { payout: u64, extra_deduction: u64 },
     /// Game completed with a loss.
     Loss,
     /// Game completed with a loss AND an additional deduction (for mid-game bet increases).
@@ -273,6 +301,14 @@ pub enum GameResult {
     /// Used for table games like Baccarat, Craps, Roulette, Sic Bo where bets are placed
     /// incrementally via ContinueWithUpdate before the final resolution.
     LossPreDeducted(u64),
+    /// Game completed with a loss where most chips were already deducted, but an additional
+    /// deduction is still required (e.g. a mid-game bet increase that ends the game immediately).
+    /// `total_loss` is the full loss amount for reporting and shield refunds; `extra_deduction`
+    /// is the portion still to deduct from the player's balance.
+    LossPreDeductedWithExtraDeduction {
+        total_loss: u64,
+        extra_deduction: u64,
+    },
     /// Game completed with a push (tie, bet returned).
     Push,
 }
